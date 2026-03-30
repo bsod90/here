@@ -5,7 +5,10 @@ Thumbs.db
 # Obsidian
 .obsidian/workspace.json
 .obsidian/workspace-mobile.json
-.obsidian/plugins/*/data.json
+.obsidian/plugins/
+.obsidian/community-plugins.json
+.obsidian/core-plugins.json
+.obsidian/appearance.json
 
 # Python
 __pycache__/
@@ -18,8 +21,12 @@ build/
 
 # Node
 node_modules/
+package-lock.json
 .next/
 dist/
+
+# Claude Code
+.claude/
 
 # Environment & secrets
 .env
