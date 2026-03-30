@@ -1,0 +1,83 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #000;
+  overflow: hidden;
+}
+
+#canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+#overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  color: #888;
+  font: 12px/1.4 monospace;
+  pointer-events: none;
+  user-select: none;
+}
+
+#status.connected { color: #4a4; }
+#status.disconnected { color: #a44; }
+
+#bench-toggle {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 20px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ccc;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 4px;
+  font: 13px/1 monospace;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: background 0.2s;
+}
+
+#bench-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+#sliders {
+  position: absolute;
+  bottom: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 16px;
+  pointer-events: auto;
+}
+
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #aaa;
+  font: 11px/1 monospace;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 6px 10px;
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+}
+
+.slider-row input[type="range"] {
+  width: 80px;
+  accent-color: #eebb77;
+}
+
+.slider-row span {
+  width: 24px;
+  text-align: right;
+  color: #ccc;
+}
