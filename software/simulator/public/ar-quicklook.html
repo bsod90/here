@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>HERE — AR Quick Look</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #ccc;
+      font-family: -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    h1 { font-size: 22px; font-weight: 300; margin: 20px 0 10px; }
+    p { font-size: 14px; color: #888; text-align: center; max-width: 350px; margin-bottom: 20px; }
+
+    model-viewer {
+      width: 100%;
+      max-width: 500px;
+      height: 400px;
+      background: #1a1a1a;
+      border-radius: 12px;
+      --poster-color: #1a1a1a;
+    }
+
+    .instructions {
+      margin-top: 20px;
+      font-size: 13px;
+      color: #666;
+      text-align: center;
+      max-width: 350px;
+    }
+
+    #export-btn {
+      margin-top: 20px;
+      padding: 12px 30px;
+      font-size: 16px;
+      background: rgba(100, 60, 200, 0.8);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      display: none;
+    }
+    #export-btn:active { transform: scale(0.95); }
+
+    .note { margin-top: 30px; font-size: 12px; color: #555; text-align: center; max-width: 350px; }
+  </style>
+
+  <!-- model-viewer from Google — handles AR Quick Look on iOS -->
+  <script type="module" src="https://unpkg.com/@google/model-viewer@4.0.0/dist/model-viewer.min.js"></script>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <h1>HERE — AR Preview</h1>
+  <p>View the installation in your space using Apple AR Quick Look (LiDAR surface tracking)</p>
+
+  <!-- model-viewer: if a GLB exists, show it with AR button -->
+  <model-viewer
+    id="viewer"
+    src="assets/here-installation.glb"
+    ar
+    ar-modes="scene-viewer quick-look"
+    ar-scale="fixed"
+    camera-controls
+    touch-action="pan-y"
+    auto-rotate
+    shadow-intensity="0.5"
+    environment-image="neutral"
+    exposure="0.8"
+    alt="HERE breathing meditation installation"
+  >
+    <button slot="ar-button" style="
+      background: rgba(100, 60, 200, 0.9);
+      color: white;
+      border: none;
+      border-radius: 10px;
+      padding: 12px 24px;
+      font-size: 16px;
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+    ">View in AR</button>
+  </model-viewer>
+
+  <button id="export-btn">Generate 3D Model</button>
+
+  <p class="instructions">
+    If the 3D model doesn't load, tap "Generate 3D Model" first, then refresh this page.
+    The AR button appears when viewing on iPhone/iPad.
+  </p>
+
+  <p class="note">
+    Note: The AR view shows a static snapshot of the LED animation (frozen at one frame).
+    For the live animated version, use the <a href="ar.html" style="color:#88f">camera overlay</a> instead.
+  </p>
+
+  <script type="module">
+    import { exportGLB } from './js/export-glb.js';
+
+    const viewer = document.getElementById('viewer');
+    const exportBtn = document.getElementById('export-btn');
+
+    // Check if the GLB already exists
+    fetch('assets/here-installation.glb', { method: 'HEAD' })
+      .then(r => {
+        if (!r.ok) {
+          exportBtn.style.display = 'block';
+          viewer.style.display = 'none';
+        }
+      })
+      .catch(() => {
+        exportBtn.style.display = 'block';
+        viewer.style.display = 'none';
+      });
+
+    exportBtn.addEventListener('click', async () => {
+      exportBtn.textContent = 'Generating...';
+      exportBtn.disabled = true;
+
+      try {
+        const blob = await exportGLB();
+        exportBtn.textContent = 'Done! Refreshing...';
+        setTimeout(() => location.reload(), 1000);
+      } catch (e) {
+        exportBtn.textContent = 'Failed — check console';
+        exportBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

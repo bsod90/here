@@ -1,0 +1,86 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #111;
+  color: #ccc;
+  font: 14px/1.5 -apple-system, 'Segoe UI', sans-serif;
+  padding: 20px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+h1 { font-size: 22px; font-weight: 300; margin-bottom: 4px; }
+h2 { font-size: 15px; font-weight: 500; margin: 20px 0 8px; color: #999; text-transform: uppercase; letter-spacing: 1px; }
+
+.status-bar {
+  display: flex; gap: 16px; font-size: 13px; color: #888;
+  padding: 8px 0; border-bottom: 1px solid #222; margin-bottom: 16px;
+}
+.status-bar span { color: #aaa; }
+
+/* Targets */
+.target-list { display: flex; flex-direction: column; gap: 6px; }
+.target-row {
+  display: flex; align-items: center; gap: 10px;
+  background: #1a1a1a; padding: 8px 12px; border-radius: 6px;
+}
+.target-dot {
+  width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.target-dot.online { background: #4a4; }
+.target-dot.offline { background: #a44; }
+.target-dot.unknown { background: #666; }
+.target-name { font-weight: 500; min-width: 100px; }
+.target-addr { color: #888; font-family: monospace; font-size: 13px; flex: 1; }
+.target-row input[type="checkbox"] { accent-color: #7a5; }
+.target-row button {
+  background: none; border: 1px solid #444; color: #888;
+  padding: 2px 8px; border-radius: 3px; cursor: pointer; font-size: 12px;
+}
+.target-row button:hover { color: #ccc; border-color: #666; }
+.target-row button.delete { border-color: #633; color: #a55; }
+.target-row button.delete:hover { color: #f66; }
+
+#add-target-btn {
+  margin-top: 6px; padding: 6px 14px;
+  background: #1a2a1a; border: 1px solid #3a5a3a; color: #8a8;
+  border-radius: 4px; cursor: pointer; font-size: 13px;
+}
+#add-target-btn:hover { background: #2a3a2a; }
+
+/* Mode buttons */
+.mode-buttons { display: flex; gap: 8px; margin-bottom: 10px; }
+.mode-btn {
+  padding: 8px 20px; border: 1px solid #444; background: #1a1a1a;
+  color: #aaa; border-radius: 6px; cursor: pointer; font-size: 14px;
+  transition: all 0.15s;
+}
+.mode-btn:hover { border-color: #666; color: #fff; }
+.mode-btn.active { background: #2a1a3a; border-color: #7744aa; color: #cc88ff; }
+
+/* Sensor buttons */
+.sensor-buttons { display: flex; gap: 8px; }
+.sensor-btn {
+  padding: 6px 16px; border: 1px solid #444; background: #1a1a1a;
+  color: #aaa; border-radius: 4px; cursor: pointer; font-size: 13px;
+}
+.sensor-btn:hover { border-color: #666; color: #fff; }
+
+/* Param groups */
+.param-group {
+  background: #1a1a1a; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;
+}
+.param-row {
+  display: flex; align-items: center; gap: 10px; margin: 4px 0;
+}
+.param-row label { min-width: 130px; font-size: 13px; color: #999; }
+.param-row input[type="range"] { flex: 1; accent-color: #7744aa; }
+.param-row .val { min-width: 50px; text-align: right; font-family: monospace; font-size: 13px; color: #aaa; }
+.param-row input[type="color"] { width: 36px; height: 24px; border: none; background: none; cursor: pointer; }
+
+/* Logs */
+#log-viewer {
+  background: #0a0a0a; color: #777; font: 11px/1.4 monospace;
+  padding: 10px; border-radius: 6px; height: 200px;
+  overflow-y: auto; white-space: pre-wrap; word-break: break-all;
+}

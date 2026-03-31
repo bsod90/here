@@ -72,12 +72,17 @@ export function createLedSystem(scene, underglowPositions, existingSystem) {
   let underglowMesh = null;
   const underglowCount = underglowPositions ? underglowPositions.length : 0;
 
+  // Underglow point lights — actual lights that illuminate the floor
+  const ugPointLights = [];
+
   if (underglowCount > 0) {
-    const ugGeo = new THREE.SphereGeometry(10, 6, 4);
+    // Very diffused — large, faint, blended into nothing
+    const ugGeo = new THREE.SphereGeometry(35, 6, 4);
     const ugMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       toneMapped: false,
       transparent: true,
+      opacity: 0.15,
       blending: THREE.AdditiveBlending,
       depthWrite: false,
     });
@@ -98,6 +103,17 @@ export function createLedSystem(scene, underglowPositions, existingSystem) {
     underglowMesh.instanceColor.needsUpdate = true;
     underglowMesh.renderOrder = 1;
     scene.add(underglowMesh);
+
+    // Few wide-range lights, evenly spaced — overlap into a smooth wash
+    // Use every 6th LED position, higher intensity + longer range to fill gaps
+    const LIGHT_EVERY = 6;
+    for (let i = 0; i < underglowCount; i += LIGHT_EVERY) {
+      const p = underglowPositions[i];
+      const pl = new THREE.PointLight(0xffaa44, 9600, 500, 1.5); // decay 1.5 = softer falloff than physical
+      pl.position.set(p.x, p.y - 15, p.z);
+      scene.add(pl);
+      ugPointLights.push(pl);
+    }
   }
 
   // ── API ────────────────────────────────────────────────
@@ -111,6 +127,7 @@ export function createLedSystem(scene, underglowPositions, existingSystem) {
     mesh,
     underglowMesh,
     underglowCount,
+    ugPointLights,
     gridPositions,
     HALF,
 

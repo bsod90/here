@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HERE — Admin</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  <h1>HERE Experience</h1>
+  <div class="status-bar">
+    <div>Mode: <span id="s-mode">—</span></div>
+    <div>FPS: <span id="s-fps">—</span></div>
+    <div>Uptime: <span id="s-uptime">—</span></div>
+    <div>LEDs: <span id="s-led-w">—</span>W</div>
+    <div>Total: <span id="s-total-w">—</span>W</div>
+    <div>~<span id="s-daily">—</span>Wh/day</div>
+    <div>Battery: <span id="s-batt">—</span>d</div>
+  </div>
+
+  <h2>Targets</h2>
+  <div id="targets" class="target-list"></div>
+  <button id="add-target-btn">+ Add Target</button>
+
+  <h2>Mode</h2>
+  <div class="mode-buttons">
+    <button class="mode-btn" data-mode="breathing">Breathing</button>
+    <button class="mode-btn" data-mode="standby">Standby</button>
+    <button class="mode-btn" data-mode="off">Off</button>
+  </div>
+
+  <h2>Sensor Simulation</h2>
+  <div class="sensor-buttons">
+    <button class="sensor-btn" onclick="sensor('occupied')">Bench Occupied</button>
+    <button class="sensor-btn" onclick="sensor('empty')">Bench Empty</button>
+  </div>
+
+  <h2>Breathing Parameters</h2>
+  <div class="param-group" id="breathing-params"></div>
+
+  <h2>Standby Parameters</h2>
+  <div class="param-group" id="standby-params"></div>
+
+  <h2>Logs</h2>
+  <div id="log-viewer"></div>
+
+  <script src="/static/admin.js"></script>
+</body>
+</html>

@@ -87,8 +87,23 @@ WLED on ESP32 supports up to 1,000 LEDs per channel, so this is within limits.
 
 | Item | Qty | Status | Notes |
 |------|-----|--------|-------|
-| Speakers (~5" drivers) | 2 | TBD | Mounted facing down through bench bottom sheet |
-| DIY amplifier | 1 | TBD | Class D recommended for efficiency |
+| [Pyle PLMRS6B 6.5" Marine Speakers](https://www.amazon.com/dp/B07FMKC7HW) | 1 pair | TBD | Marine-grade, facing down through bench bottom. 60W RMS/ea, 4 ohm, 90 dB, 60Hz-18kHz. Super slim 23mm mounting depth. |
+| [ZK-1002T Class D Amp (BT 5.0 + AUX)](https://www.amazon.com/ZK-1002T-Bluetooth-Amplifier-Antenna-TPA3116D2/dp/B0GK12BKCK) | 1 | TBD | TPA3116D2, ~20W/ch at 12V into 4 ohm. BT 5.0 available as fallback. RPi connects via 3.5mm AUX. 12-24V DC input. |
+| [TP-Link UB500 USB BT 5.0 Dongle](https://www.amazon.com/s?k=TP-Link+UB500+Bluetooth+5.0) | 1 | TBD | Backup: if RPi's built-in BT can't handle A2DP + BLE simultaneously. RTL8761B chipset, Linux/Bookworm compatible. |
+
+### Audio Architecture
+
+```
+Phone ──[BT A2DP]──→ RPi ──[PipeWire: analyze + 3.5mm out]──→ ZK-1002T ──→ 6.5" Speakers
+Phone ──[BLE]──────→ RPi (control app via GATT server)
+RPi meditation audio ──→ [same PipeWire sink] ──→ ZK-1002T ──→ Speakers
+```
+
+- RPi handles BT audio (A2DP sink) + BLE control on its built-in adapter
+- PipeWire mixes incoming BT audio with local meditation files
+- Audio stream forked for FFT analysis → music-synced LED animations
+- If dual BT causes issues, plug in TP-Link UB500 dongle ($10) to separate A2DP and BLE
+- ZK-1002T's built-in BT available as a fallback if RPi BT fails entirely
 
 ## Ventilation
 
@@ -103,13 +118,16 @@ WLED on ESP32 supports up to 1,000 LEDs per channel, so this is within limits.
 
 ## Still Needed
 
-- [ ] Speakers + DIY amplifier
+- [ ] Pyle PLMRS6B 6.5" marine speakers (~$30)
+- [ ] ZK-1002T amp board (~$15-20)
+- [ ] TP-Link UB500 BT dongle (~$10, insurance)
 - [ ] 120mm fan + dust filter for positive-pressure ventilation
 - [ ] Power step-down (48V→12V for LEDs, 48V→5V for RPi) — or 110V inverter + off-the-shelf PSU
 - [ ] Ethernet cable (RPi ↔ Gledopto, direct connection)
 - [ ] Power injection wiring (every ~100 LEDs)
 - [ ] Bench materials (plywood for box, 4×4 lumber for legs)
 - [ ] Cable management / connectors / grommets for cable pass-throughs
+- [ ] 3.5mm audio cable (RPi → amp AUX input)
 
 ---
 
@@ -121,7 +139,7 @@ WLED on ESP32 supports up to 1,000 LEDs per channel, so this is within limits.
 |-----------|---------|--------|-------|
 | Raspberry Pi 4 | 3W | 6W | Audio playback + orchestrator |
 | WLED controller | 1W | 2W | Relay cuts LED power when idle |
-| Audio (amp + 2 speakers) | 1W | 8W | Ocean sounds ~3W, voice meditation ~8W |
+| Audio (ZK-1002T + 6.5" speakers) | 2W | 15W | Idle ~2W (BT standby). Meditation voice ~8W, music ~15W |
 | 120mm ventilation fan | 1.5W | 1.5W | Runs 24/7 for positive pressure |
 | LEDs — standby sparkle | — | 5W | ~100 random LEDs at low brightness |
 | LEDs — breathing animation | — | 35W | ~700 LEDs avg, radial pulse, ~50% brightness |
@@ -133,13 +151,13 @@ Assumptions: art runs 24/7. Daytime (6am–6pm) = voice-only. Nighttime (6pm–6
 
 | Period                                                                | Hours | Avg Power | Energy         |
 | --------------------------------------------------------------------- | ----- | --------- | -------------- |
-| **Daytime** (voice only, LEDs off)                                    | 12h   | 11.5W     | 138Wh          |
-| RPi (6W) + Audio (3W) + WLED idle (1W) + Fan (1.5W)                   |       |           |                |
-| **Night standby** (sparkle + ocean)                                   | 10h   | 15.5W     | 155Wh          |
-| RPi (5W) + Audio (3W) + WLED (2W) + LEDs sparkle (4W) + Fan (1.5W)    |       |           |                |
-| **Night active** (breathing meditation)                               | 2h    | 52.5W     | 105Wh          |
-| RPi (6W) + Audio (8W) + WLED (2W) + LEDs animation (35W) + Fan (1.5W) |       |           |                |
-|                                                                       |       | **Total** | **~398Wh/day** |
+| **Daytime** (voice only, LEDs off)                                    | 12h   | 16.5W     | 198Wh          |
+| RPi (6W) + Audio (8W) + WLED idle (1W) + Fan (1.5W)                   |       |           |                |
+| **Night standby** (sparkle + ocean)                                   | 10h   | 20.5W     | 205Wh          |
+| RPi (5W) + Audio (8W) + WLED (2W) + LEDs sparkle (4W) + Fan (1.5W)    |       |           |                |
+| **Night active** (breathing meditation)                               | 2h    | 57.5W     | 115Wh          |
+| RPi (6W) + Audio (13W) + WLED (2W) + LEDs animation (35W) + Fan (1.5W)|       |           |                |
+|                                                                       |       | **Total** | **~518Wh/day** |
 
 ### Battery Runtime (no solar)
 
@@ -153,22 +171,22 @@ Assumptions: art runs 24/7. Daytime (6am–6pm) = voice-only. Nighttime (6pm–6
 | | Daily |
 |--|-------|
 | Solar input (~200W panel, 6 peak sun hours) | +1,200Wh |
-| Consumption | −398Wh |
-| **Net surplus** | **+802Wh** |
+| Consumption | −518Wh |
+| **Net surplus** | **+682Wh** |
 
-Solar comfortably covers daily usage with ~3× margin.
+Solar comfortably covers daily usage with ~2.3× margin.
 
 ### Battery-Only Option (no solar)
 
-Option to borrow a second battery. With ~398Wh/day (+15% conversion losses ≈ 458Wh/day), 7-day target = ~3,206Wh needed.
+Option to borrow a second battery. With ~518Wh/day (+15% conversion losses ≈ 596Wh/day), 7-day target = ~4,172Wh needed.
 
 | Setup | Usable capacity (80% DoD) | Runtime |
 |-------|---------------------------|---------|
-| 1× 12V 100Ah (1,280Wh) | 1,024Wh | ~2.2 days |
-| 2× 12V 100Ah (2,560Wh) | 2,048Wh | ~4.5 days |
-| 1× 48V 50Ah (2,560Wh) | 2,048Wh | ~4.5 days |
-| 2× 48V 50Ah (5,120Wh) | 4,096Wh | **~8.9 days** |
+| 1× 12V 100Ah (1,280Wh) | 1,024Wh | ~1.7 days |
+| 2× 12V 100Ah (2,560Wh) | 2,048Wh | ~3.4 days |
+| 1× 48V 50Ah (2,560Wh) | 2,048Wh | ~3.4 days |
+| 2× 48V 50Ah (5,120Wh) | 4,096Wh | **~6.9 days** |
 
-**Verdict:** 2× 48V batteries can do 7 days battery-only with comfortable margin. 2× 12V would fall short — would still need solar or reduced usage. Decision TBD.
+**Verdict:** 2× 48V batteries can just barely do 7 days battery-only. Solar panel recommended as backup. Decision TBD.
 
 > **Note:** Conversion losses (48V→12V→5V or 12V→5V) add ~10-15% overhead, factored in above.

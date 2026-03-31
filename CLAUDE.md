@@ -21,10 +21,12 @@ See [docs/inventory.md](docs/inventory.md) for full BOM with links.
 
 ```
 [Solar] → [Battery] → [RPi 4] → (Ethernet) → [WLED ESP32] → [44x44 LED matrix]
-                        ↓
-                   [Speaker/Audio]
-                        ↓
-                   [Mobile app] (optional control)
+                        ↓ 3.5mm
+                   [ZK-1002T amp] → [2× Pyle 6.5" marine speakers]
+                        ↓ BLE
+                   [Phone control app] (Flutter, mode toggle, logs)
+                        ↓ BT A2DP
+                   [Phone music] → RPi → PipeWire (mix + FFT) → amp
 ```
 
 ## Repository Structure

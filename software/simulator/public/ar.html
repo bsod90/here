@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>HERE — AR Preview</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: -apple-system, sans-serif; }
+
+    #camera-feed {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      z-index: 0;
+    }
+
+    #canvas {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      z-index: 1;
+    }
+
+    #info {
+      position: fixed;
+      top: 50px; left: 50%; transform: translateX(-50%);
+      color: white;
+      font-size: 14px;
+      background: rgba(0,0,0,0.5);
+      padding: 8px 16px;
+      border-radius: 8px;
+      pointer-events: none;
+      z-index: 2;
+      text-align: center;
+    }
+
+    #start-screen {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: #111; color: #ccc; gap: 20px;
+      z-index: 10;
+    }
+
+    #start-screen h1 { font-size: 24px; font-weight: 300; }
+    #start-screen p { font-size: 14px; color: #888; text-align: center; max-width: 300px; }
+
+    #start-button {
+      padding: 16px 40px;
+      font-size: 18px;
+      background: rgba(100, 60, 200, 0.8);
+      color: white;
+      border: none;
+      border-radius: 12px;
+      cursor: pointer;
+    }
+    #start-button:active { transform: scale(0.95); }
+
+    #scale-slider {
+      position: fixed;
+      bottom: 30px; left: 50%; transform: translateX(-50%);
+      z-index: 2;
+      display: none;
+      align-items: center; gap: 8px;
+      background: rgba(0,0,0,0.5);
+      padding: 8px 16px;
+      border-radius: 8px;
+      color: #ccc; font: 12px monospace;
+    }
+    #scale-slider input { width: 120px; accent-color: #8844cc; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="start-screen">
+    <h1>HERE — AR Preview</h1>
+    <p>Preview the breathing meditation installation in your space using your camera</p>
+    <button id="start-button">Start Camera</button>
+  </div>
+
+  <video id="camera-feed" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+  <div id="info">Drag to rotate · Pinch to resize</div>
+  <div id="scale-slider">
+    <label>Size</label>
+    <input type="range" id="size-range" min="10" max="200" value="100" step="5">
+    <span id="size-val">100%</span>
+  </div>
+
+  <script type="module" src="js/ar-camera.js"></script>
+</body>
+</html>
