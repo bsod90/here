@@ -67,7 +67,7 @@ def create_app(config, engine, transport) -> FastAPI:
     # ── Mode ────────────────────────────────────────────────
     @app.post("/api/mode/{mode}")
     async def set_mode(mode: str):
-        if mode not in ("breathing", "standby", "off"):
+        if mode not in ("breathing", "standby", "debug", "off"):
             return JSONResponse({"error": "invalid mode"}, status_code=400)
         config.set("mode", mode)
         engine.mode = mode

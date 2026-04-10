@@ -4,7 +4,7 @@ import time
 import logging
 
 from grid import FRAME_BYTES, TOTAL
-from animations import breathing, standby
+from animations import breathing, standby, debug
 
 # Power constants (from docs/inventory.md)
 WATTS_PER_LED_FULL_WHITE = 0.1  # WS2811 at full RGB white
@@ -100,6 +100,8 @@ class AnimationEngine:
             elif mode == "standby":
                 params = self.config.get("standby")
                 standby.render(self.frame, time_ms, params, self._standby_state)
+            elif mode == "debug":
+                debug.render(self.frame, time_ms, {})
             elif mode == "off":
                 for i in range(len(self.frame)):
                     self.frame[i] = 0
