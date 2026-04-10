@@ -52,15 +52,8 @@ class UDPTransport:
     def __init__(self, targets: list[dict], config):
         self._config = config
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        for t in targets:
-            src = _find_source_ip_for(t.get("ip", "127.0.0.1"))
-            if src and src != "127.0.0.1":
-                try:
-                    self._sock.bind((src, 0))
-                    logger.info(f"UDP socket bound to {src} (for {t['ip']})")
-                except OSError:
-                    pass
-                break
+        # Don't bind to a specific interface — let the OS route each packet.
+        # This way localhost targets keep working even if the WLED interface goes down.
         self._lock = threading.Lock()
         self._targets = []
         self._seq = 0  # DDP sequence counter
@@ -132,7 +125,7 @@ class UDPTransport:
             for ip, _ in targets:
                 try:
                     self._sock.sendto(packet, (ip, DDP_PORT))
-                except OSError:
+                except Exception:
                     pass
 
             offset += chunk
@@ -162,7 +155,7 @@ class UDPTransport:
             for ip, port in targets:
                 try:
                     self._sock.sendto(pkt, (ip, port))
-                except OSError:
+                except Exception:
                     pass
             if i < len(packets) - 1 and delay > 0:
                 time.sleep(delay)
