@@ -86,9 +86,9 @@ class AnimationEngine:
         logger.info("Animation engine stopped")
 
     def _loop(self):
-        target_interval = 1.0 / 30  # 30fps
-
         while self._running:
+            fps = self.config.get("transport").get("fps", 22)
+            target_interval = 1.0 / max(fps, 1)
             frame_start = time.monotonic()
             time_ms = (frame_start - self._start_time) * 1000
 

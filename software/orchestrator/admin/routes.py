@@ -142,6 +142,18 @@ def create_app(config, engine, transport) -> FastAPI:
         logger.info(f"Target removed: {removed['name']}")
         return {"ok": True, "targets": transport.get_targets()}
 
+    # ── Transport settings ───────────────────────────────────
+    @app.get("/api/transport")
+    async def get_transport():
+        return config.get("transport")
+
+    @app.put("/api/transport")
+    async def update_transport(request: Request):
+        data = await request.json()
+        config.set("transport", data)
+        logger.info(f"Transport updated: {data}")
+        return config.get("transport")
+
     # ── Logs ────────────────────────────────────────────────
     @app.get("/api/logs")
     async def get_logs():

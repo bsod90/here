@@ -78,6 +78,16 @@ h2 { font-size: 15px; font-weight: 500; margin: 20px 0 8px; color: #999; text-tr
 .param-row .val { min-width: 50px; text-align: right; font-family: monospace; font-size: 13px; color: #aaa; }
 .param-row input[type="color"] { width: 36px; height: 24px; border: none; background: none; cursor: pointer; }
 
+/* Palette buttons */
+.palette-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.2s;
+}
+.palette-btn:hover { border-color: #666 !important; }
+.palette-btn.active { border-color: #7744aa !important; }
+
 /* Logs */
 #log-viewer {
   background: #0a0a0a; color: #777; font: 11px/1.4 monospace;

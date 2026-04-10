@@ -29,7 +29,7 @@ def main():
 
     # Init
     config = ConfigManager(path=args.config)
-    transport = UDPTransport(config.get("targets") or [])
+    transport = UDPTransport(config.get("targets") or [], config)
     engine = AnimationEngine(config, transport)
     app = create_app(config, engine, transport)
 

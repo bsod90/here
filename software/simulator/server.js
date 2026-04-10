@@ -94,30 +94,26 @@ function broadcast(data) {
   }
 }
 
-// ── UDP DNRGB listener ─────────────────────────────────────
+// ── UDP listener (DNRGB on 21324, DDP on 4048) ────────────
 const frameBuffer = new Uint8Array(FRAME_BYTES);
 let frameDirty = false;
 
+// DNRGB listener (port 21324)
 const udp = dgram.createSocket('udp4');
 
 udp.on('message', (msg) => {
   if (msg.length < 4) return;
   const protocol = msg[0];
 
-  if (protocol === 2) {
-    const startIndex = (msg[1] << 8) | msg[2];
-    const rgbData = msg.subarray(3);
+  if (protocol === 4) {
+    // DNRGB: [4, timeout, startHi, startLo, R,G,B,...]
+    if (msg.length < 5) return;
+    const startIndex = (msg[2] << 8) | msg[3];
+    const rgbData = msg.subarray(4);
     const startByte = startIndex * 3;
     const copyLen = Math.min(rgbData.length, FRAME_BYTES - startByte);
     if (startByte >= 0 && startByte < FRAME_BYTES && copyLen > 0) {
       frameBuffer.set(rgbData.subarray(0, copyLen), startByte);
-      frameDirty = true;
-    }
-  } else if (protocol === 4) {
-    const rgbData = msg.subarray(1);
-    const copyLen = Math.min(rgbData.length, FRAME_BYTES);
-    if (copyLen > 0) {
-      frameBuffer.set(rgbData.subarray(0, copyLen), 0);
       frameDirty = true;
     }
   }
@@ -125,6 +121,26 @@ udp.on('message', (msg) => {
 
 udp.on('listening', () => console.log(`[udp] DNRGB on port ${UDP_PORT}`));
 udp.bind(UDP_PORT);
+
+// DDP listener (port 4048)
+const DDP_PORT = 4048;
+const ddp = dgram.createSocket('udp4');
+
+ddp.on('message', (msg) => {
+  if (msg.length < 10) return; // DDP header is 10 bytes
+  // DDP header: flags(1) seq(1) type(1) source(1) offset(4) length(2) data...
+  const offset = (msg[4] << 24) | (msg[5] << 16) | (msg[6] << 8) | msg[7];
+  const length = (msg[8] << 8) | msg[9];
+  const rgbData = msg.subarray(10);
+  const copyLen = Math.min(rgbData.length, length, FRAME_BYTES - offset);
+  if (offset >= 0 && offset < FRAME_BYTES && copyLen > 0) {
+    frameBuffer.set(rgbData.subarray(0, copyLen), offset);
+    frameDirty = true;
+  }
+});
+
+ddp.on('listening', () => console.log(`[udp] DDP on port ${DDP_PORT}`));
+ddp.bind(DDP_PORT);
 
 // ── Broadcast loop ─────────────────────────────────────────
 setInterval(() => {

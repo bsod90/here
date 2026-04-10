@@ -10,15 +10,10 @@ const PLY = 19;
 const JOIST_H = 89; // 2x4 subfloor height
 const HALF = GRID / 2; // 22 — columns per channel
 
-// ── Serpentine mapping ─────────────────────────────────────
+// ── Simple row-major mapping ────────────────────────────────
+// WLED handles serpentine/panel remapping internally.
 function linearToGrid(index) {
-  const channel = index < GRID * HALF ? 0 : 1;
-  const localIndex = index - channel * (GRID * HALF);
-  const row = Math.floor(localIndex / HALF);
-  let localCol = localIndex % HALF;
-  if (row % 2 !== 0) localCol = HALF - 1 - localCol;
-  const col = channel === 0 ? localCol : localCol + HALF;
-  return [row, col];
+  return [Math.floor(index / GRID), index % GRID];
 }
 
 // Pre-compute grid positions for each linear index

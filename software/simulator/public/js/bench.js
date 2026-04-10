@@ -8,6 +8,7 @@ const PLY = 19;
 const JOIST_H = 89;    // 2x4 subfloor height
 const LEG_DIM = 89;    // 3.5" actual
 const LEG_INSET = 250;
+const BENCH_Z_OFFSET = -400;  // pushed toward back edge of platform
 
 // Underglow
 const CHAN_INSET = 80;
@@ -28,7 +29,7 @@ function computeUnderglowPositions(angle) {
       const localX = -UG_STRIP_LEN / 2 + i * UG_PITCH + UG_PITCH / 2;
       const worldX = localX * cosA + localZ * sinA;
       const worldZ = -localX * sinA + localZ * cosA;
-      positions.push(new THREE.Vector3(worldX, ugY, worldZ));
+      positions.push(new THREE.Vector3(worldX, ugY, worldZ + BENCH_Z_OFFSET));
     }
   }
   return positions;
@@ -180,7 +181,8 @@ export function createBench() {
 
   group.add(person);
 
-  // Start parallel
+  // Position: offset toward back edge, start parallel
+  group.position.z = BENCH_Z_OFFSET;
   let currentAngle = 0;
   group.rotation.y = currentAngle;
 

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>HERE — Admin</title>
-  <link rel="stylesheet" href="/static/admin.css">
+  <link rel="stylesheet" href="/static/admin.css?v=11">
 </head>
 <body>
   <h1>HERE Experience</h1>
@@ -35,8 +35,40 @@
     <button class="sensor-btn" onclick="sensor('empty')">Bench Empty</button>
   </div>
 
+  <h2>Transport</h2>
+  <div class="param-group">
+    <div style="margin-bottom:10px;">
+      <label style="color:#999;font-size:13px;margin-right:10px;">Protocol:</label>
+      <button class="mode-btn proto-btn" data-proto="ddp">DDP</button>
+      <button class="mode-btn proto-btn" data-proto="dnrgb">DNRGB</button>
+    </div>
+    <div id="transport-params"></div>
+  </div>
+
   <h2>Breathing Parameters</h2>
   <div class="param-group" id="breathing-params"></div>
+
+  <h2>Spin Effect</h2>
+  <div class="param-group">
+    <div style="margin-bottom:10px;">
+      <label style="color:#999;font-size:13px;margin-right:10px;">Spin:</label>
+      <button class="mode-btn spin-toggle" data-val="false">Off</button>
+      <button class="mode-btn spin-toggle" data-val="true">On</button>
+      <span style="margin-left:16px;"></span>
+      <label style="color:#999;font-size:13px;margin-right:10px;">Mode:</label>
+      <button class="mode-btn spin-mode-btn" data-val="constant">Constant</button>
+      <button class="mode-btn spin-mode-btn" data-val="yoyo">Yo-Yo</button>
+      <span style="margin-left:16px;"></span>
+      <label style="color:#999;font-size:13px;margin-right:10px;">Direction:</label>
+      <button class="mode-btn spin-dir-btn" data-val="true">Reverse</button>
+      <button class="mode-btn spin-dir-btn" data-val="false">Same</button>
+    </div>
+    <div id="spin-params"></div>
+  </div>
+
+  <h2>Palette</h2>
+  <div id="palette-selector" class="param-group"></div>
+  <div id="palette-editor" class="param-group" style="margin-top:6px;"></div>
 
   <h2>Standby Parameters</h2>
   <div class="param-group" id="standby-params"></div>
@@ -44,6 +76,6 @@
   <h2>Logs</h2>
   <div id="log-viewer"></div>
 
-  <script src="/static/admin.js"></script>
+  <script src="/static/admin.js?v=11"></script>
 </body>
 </html>
