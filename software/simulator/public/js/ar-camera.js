@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createBench } from './bench.js';
+import { createElecBox } from './elec-box.js';
 import { createLedSystem } from './leds.js';
 import { updateDemo } from './demo.js';
 
@@ -124,8 +125,12 @@ function initScene() {
   const bench = createBench();
   installation.add(bench.group);
 
+  // Side electronics box
+  const elecBox = createElecBox();
+  installation.add(elecBox.group);
+
   // LEDs
-  const leds = createLedSystem(installation, bench.underglowPositions);
+  const leds = createLedSystem(installation);
 
   // Scale to meters
   installation.scale.setScalar(BASE_SCALE);

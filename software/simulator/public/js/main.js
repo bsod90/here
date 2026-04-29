@@ -1,6 +1,7 @@
 import { scene, camera, composer, controls } from './scene.js';
 import { createPlatform } from './platform.js';
 import { createBench } from './bench.js';
+import { createElecBox } from './elec-box.js';
 import { createLedSystem } from './leds.js';
 import { connectWebSocket } from './connection.js';
 import { updateDemo } from './demo.js';
@@ -12,7 +13,10 @@ scene.add(platform);
 const bench = createBench();
 scene.add(bench.group);
 
-let leds = createLedSystem(scene, bench.underglowPositions);
+const elecBox = createElecBox();
+scene.add(elecBox.group);
+
+const leds = createLedSystem(scene);
 const ws = connectWebSocket(leds);
 
 // ── Bench orientation toggle ───────────────────────────────
@@ -22,21 +26,10 @@ let isDiagonal = false;
 
 function switchBenchAngle() {
   isDiagonal = !isDiagonal;
-  const angle = isDiagonal ? DIAGONAL : PARALLEL;
-  bench.setAngle(angle);
-
-  // Rebuild underglow LEDs at new positions
-  if (leds.underglowMesh) {
-    scene.remove(leds.underglowMesh);
-  }
-  leds = createLedSystem(scene, bench.underglowPositions, leds);
-  // Re-wire websocket to new led system
-  ws.leds = leds;
-
+  bench.setAngle(isDiagonal ? DIAGONAL : PARALLEL);
   toggleBtn.textContent = isDiagonal ? 'Diagonal' : 'Parallel';
 }
 
-// UI button
 const toggleBtn = document.createElement('button');
 toggleBtn.textContent = 'Parallel';
 toggleBtn.id = 'bench-toggle';

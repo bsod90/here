@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render all bench assembly views to PNG.
+# Render assembly views (slab bench + side electronics box) to PNG.
 # Usage: ./render.sh           (render all)
 #        ./render.sh open_iso  (render one view by name)
 set -euo pipefail
@@ -10,11 +10,12 @@ SIZE="1600,1200"
 SCHEME="Sunset"
 
 # ── camera presets ──────────────────────────────────────────
-CAM_ISO="0,0,200,60,0,225,5500"
-CAM_ISO_FRONT="0,0,200,55,0,315,5500"
-CAM_TOP="0,0,200,0,0,45,5000"
-CAM_SIDE="0,0,250,80,0,225,4500"
-CAM_BENCH="0,0,350,55,0,225,2500"
+CAM_ISO="0,0,200,60,0,225,6500"
+CAM_ISO_FRONT="0,0,200,55,0,315,6500"
+CAM_TOP="0,0,200,0,0,45,6000"
+CAM_SIDE="0,0,250,80,0,225,5500"
+CAM_BENCH="0,0,500,55,0,225,3000"
+CAM_ELEC="-1394,0,150,60,0,110,1700"
 
 # ── common overrides ────────────────────────────────────────
 BASE="two_batteries=true;show_desert=true"
@@ -36,13 +37,16 @@ render() {
 mkdir -p renders
 
 # ── view definitions: name|camera|overrides ─────────────────
+# `lid_open` controls the electronics box lid + internals (the slab bench
+# itself has no lid). `for_export=true` strips dimension/text labels.
 VIEWS=(
 "open_iso|${CAM_ISO}|${BASE};lid_open=true;show_leds=true;for_export=true"
 "open_front|${CAM_ISO_FRONT}|${BASE};lid_open=true;show_leds=true;for_export=true"
 "open_top|${CAM_TOP}|${BASE};lid_open=true;show_leds=true;for_export=true"
 "open_side|${CAM_SIDE}|${BASE};lid_open=true;show_leds=true;for_export=true"
-"open_close|${CAM_BENCH}|${BASE};lid_open=true;show_leds=false;show_platform=false;show_desert=false;for_export=true"
 "closed_iso|${CAM_ISO}|${BASE};lid_open=false;show_leds=true;for_export=true"
+"bench_close|${CAM_BENCH}|${BASE};lid_open=false;show_leds=false;show_elec=false;show_desert=false;for_export=true"
+"elec_close|${CAM_ELEC}|${BASE};lid_open=true;show_leds=false;show_bench=false;show_platform=false;show_desert=false;for_export=true"
 "dims_iso|${CAM_ISO}|${BASE};lid_open=true;show_leds=false;show_dimensions=true;for_export=false"
 "dims_top|${CAM_TOP}|${BASE};lid_open=true;show_leds=false;show_dimensions=true;for_export=false"
 )

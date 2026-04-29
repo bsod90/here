@@ -25,7 +25,7 @@ function flattenInstancedMesh(instMesh) {
       instMesh.getColorAt(i, color);
       // Skip dark LEDs and every other LED for performance
       if (color.r < 0.05 && color.g < 0.05 && color.b < 0.05) continue;
-      if (i % 2 !== 0) continue; // export every other LED
+      if (i % 2 !== 0) continue;
     }
 
     const mat = new THREE.MeshStandardMaterial({
@@ -76,41 +76,63 @@ export async function exportGLB() {
     sub.position.y = JOIST_H / 2;
     exportScene.add(sub);
 
-    // Bench — build inline without textures (GLTFExporter chokes on cross-origin textures)
-    const BENCH_L = 1219, BENCH_W = 300, BENCH_H = 350;
-    const LEG_DIM = 89, LEG_INSET = 250;
-    const boxBottomY = JOIST_H + PLY + LEG_DIM;
+    // ── Bench — solid 4″ slab on two 4×4 legs ──
+    const SLAB_L = 1524, SLAB_W = 305, SLAB_H = 102;
+    const LEG_DIM = 89, LEG_H = 233, LEG_INSET = 250;
+    const slabBottomY = JOIST_H + PLY + LEG_H;
 
     const benchGroup = new THREE.Group();
-    const benchMat = new THREE.MeshStandardMaterial({ color: 0xc8a564, roughness: 0.85 });
-    const legMat = new THREE.MeshStandardMaterial({ color: 0xb09050, roughness: 0.85 });
+    const slabMat = new THREE.MeshStandardMaterial({ color: 0xe6c89a, roughness: 0.8 });
+    const legMat  = new THREE.MeshStandardMaterial({ color: 0xc8a878, roughness: 0.85 });
 
-    const box = new THREE.Mesh(new THREE.BoxGeometry(BENCH_L, BENCH_H, BENCH_W), benchMat);
-    box.position.y = boxBottomY + BENCH_H / 2;
-    benchGroup.add(box);
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(SLAB_L, SLAB_H, SLAB_W), slabMat);
+    slab.position.y = slabBottomY + SLAB_H / 2;
+    benchGroup.add(slab);
 
     for (const sx of [-1, 1]) {
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(LEG_DIM, LEG_DIM, BENCH_W), legMat);
-      leg.position.set(sx * (BENCH_L / 2 - LEG_INSET), JOIST_H + PLY + LEG_DIM / 2, 0);
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(LEG_DIM, LEG_H, SLAB_W), legMat);
+      leg.position.set(sx * (SLAB_L / 2 - LEG_INSET), JOIST_H + PLY + LEG_H / 2, 0);
       benchGroup.add(leg);
     }
     benchGroup.rotation.y = 0;
+    benchGroup.position.z = -810; // matches BENCH_Z_OFFSET in bench.js
     exportScene.add(benchGroup);
 
-    // LEDs — create in a temp group, bake one frame, then flatten
-    // Skip underglow for AR export (they're under the bench, not visible)
+    // ── Side electronics box (no feet, against the platform) ──
+    const ELEC_L = 870, ELEC_W = 350, ELEC_H = 280;
+    const SPK_DIA = 130;
+    const ELEC_OFFSET = 0;
+    const BENCH_Z_OFFSET = -810;
+
+    const elecGroup = new THREE.Group();
+    const elecMat = new THREE.MeshStandardMaterial({ color: 0xc8a564, roughness: 0.85 });
+
+    const elecBody = new THREE.Mesh(new THREE.BoxGeometry(ELEC_L, ELEC_H, ELEC_W), elecMat);
+    elecBody.position.y = ELEC_H / 2;
+    elecGroup.add(elecBody);
+
+    // Speaker grilles on the +Z face (toward the bench)
+    const grilleMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9 });
+    const grilleGeo = new THREE.CircleGeometry(SPK_DIA / 2, 24);
+    const grilleY = ELEC_H - SPK_DIA / 2 - 12;
+    for (const sx of [-1, 1]) {
+      const grille = new THREE.Mesh(grilleGeo, grilleMat);
+      grille.position.set(sx * (ELEC_L / 4), grilleY, ELEC_W / 2 + 0.5);
+      elecGroup.add(grille);
+    }
+
+    elecGroup.rotation.y = Math.PI / 2;
+    elecGroup.position.x = -(PLATFORM_SIZE / 2 + ELEC_OFFSET + ELEC_W / 2);
+    exportScene.add(elecGroup);
+
+    // LEDs — bake one frame, then flatten
     const tempGroup = new THREE.Group();
-    const leds = createLedSystem(tempGroup, []);
+    const leds = createLedSystem(tempGroup);
     updateDemo(2000, leds); // bake at mid-breath
 
-    // Flatten InstancedMeshes to regular meshes for GLB export
     if (leds.mesh) {
       const flatFloor = flattenInstancedMesh(leds.mesh);
       exportScene.add(flatFloor);
-    }
-    if (leds.underglowMesh) {
-      const flatUG = flattenInstancedMesh(leds.underglowMesh);
-      exportScene.add(flatUG);
     }
 
     // Scale to meters
@@ -123,7 +145,6 @@ export async function exportGLB() {
     const glb = await exporter.parseAsync(wrapper, { binary: true });
     console.log('[export] GLB generated,', glb.byteLength, 'bytes');
 
-    // Upload to server
     const resp = await fetch('/upload-model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },

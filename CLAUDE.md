@@ -6,7 +6,7 @@
 
 A guided breathing meditation installation for Burning Man. Participants sit on a bench centered on a ~8×8ft wooden platform (2× 4×8ft plywood sheets) embedded with a 44×44 LED matrix. The LEDs display breathing-synchronized radial animations while audio guides the meditation. Solar-powered (or battery-only with 2 batteries).
 
-The bench is a **plywood box** (5ft × 20in × 14in) oriented diagonally on the platform, sitting on 4×4 lumber legs. It doubles as the electronics enclosure housing the battery, RPi, WLED controller, speakers (facing down), and a ventilation fan with dust filter for positive pressure. See [bench/bench.md](bench/bench.md) for the 3D model and interior layout.
+The bench is a **solid 4″-thick plywood slab** (~5ft × 12in) on two 4×4 lumber legs, oriented diagonally on the platform. All electronics and speakers live in a **separate side enclosure** standing on the desert floor next to the platform — same footprint as the old combined bench but shorter (~11″ tall). The side box houses the batteries, RPi, WLED controller, amp, ventilation fan, and 2× downward-facing speakers. See [bench/bench.md](bench/bench.md) for the 3D model and dimensions.
 
 ## Hardware
 
