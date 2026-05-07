@@ -48,3 +48,6 @@ dist/
 # Build artifacts
 *.o
 *.so
+
+# Local scratch / diagnostics
+tmp/

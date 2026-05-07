@@ -1,0 +1,33 @@
+[Unit]
+Description=HERE Experience Orchestrator
+Documentation=https://github.com/bsod90/here
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=here
+WorkingDirectory=/opt/here
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/here/.venv/bin/python /opt/here/main.py --host 0.0.0.0 --port 8000
+
+# Failsafe: the orchestrator restarts forever, no rate limit. If a bug
+# crash-loops, we'd rather flap than go dark in the field.
+Restart=always
+RestartSec=3
+StartLimitBurst=0
+StartLimitIntervalSec=0
+
+# Logs to journald (capped via /etc/systemd/journald.conf.d/here.conf)
+StandardOutput=journal
+StandardError=journal
+
+# Light hardening — orchestrator only needs read of system, write of /opt/here
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/here
+ProtectHome=read-only
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
