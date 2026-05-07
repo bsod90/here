@@ -7,9 +7,21 @@ from pathlib import Path
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.responses import Response
 from config import get_defaults
 
 AP_CON = "here-debug-ap"
+
+
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static files with Cache-Control: no-cache so deploys take
+    effect on the next refresh without manual hard-reloads. The
+    simulator UI is small, so the revalidation cost is negligible."""
+
+    async def get_response(self, path, scope):
+        response: Response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
 
 
 def _ap_state() -> dict:
@@ -88,7 +100,7 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
         # local dev: try the repo path relative to this file
         sim_dir = Path(__file__).resolve().parents[3] / "simulator" / "public"
     if sim_dir.exists():
-        app.mount("/sim", StaticFiles(directory=str(sim_dir), html=True), name="sim")
+        app.mount("/sim", NoCacheStaticFiles(directory=str(sim_dir), html=True), name="sim")
         logger.info(f"Simulator UI mounted at /sim/ from {sim_dir}")
     else:
         logger.warning(f"Simulator UI directory not found ({sim_dir}); /sim tab will 404")
