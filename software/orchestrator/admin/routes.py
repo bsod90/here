@@ -1,10 +1,35 @@
 """FastAPI admin panel routes."""
+import asyncio
 import logging
+import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from config import get_defaults
+
+AP_CON = "here-debug-ap"
+
+
+def _ap_state() -> dict:
+    """Return AP profile presence + activation state."""
+    try:
+        out = subprocess.check_output(
+            ["nmcli", "-t", "-f", "NAME,DEVICE,STATE", "con", "show"],
+            timeout=2,
+        ).decode()
+    except Exception:
+        return {"defined": False, "active": False}
+    defined = False
+    active = False
+    for line in out.splitlines():
+        parts = line.split(":")
+        if parts and parts[0] == AP_CON:
+            defined = True
+            if len(parts) >= 3 and parts[2] == "activated":
+                active = True
+    return {"defined": defined, "active": active}
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +46,52 @@ class LogHandler(logging.Handler):
             _log_buffer.pop(0)
 
 
-def create_app(config, engine, transport) -> FastAPI:
-    app = FastAPI(title="HERE Admin")
+def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastAPI:
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Hand the running asyncio loop to the simulator bus so the
+        # (sync) animation thread can dispatch broadcasts onto it.
+        if sim_bus is not None:
+            sim_bus.attach_loop(asyncio.get_running_loop())
+        yield
+
+    app = FastAPI(title="HERE Admin", lifespan=lifespan)
 
     static_dir = Path(__file__).parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # ── Simulator WebSocket — must be registered BEFORE the /sim mount
+    # so FastAPI's router catches it instead of the static handler.
+    @app.websocket("/sim/ws")
+    async def sim_ws(ws: WebSocket):
+        await ws.accept()
+        if sim_bus is None:
+            await ws.close(code=1011)
+            return
+        await sim_bus.register(ws)
+        try:
+            # The simulator client doesn't send anything; we just hold
+            # the socket open and serve frames from the broadcaster.
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+        finally:
+            await sim_bus.unregister(ws)
+
+    # ── Simulator static UI — mounted at /sim/, populated by install.sh
+    # from software/simulator/public/.
+    sim_dir = Path("/opt/here/sim")
+    if not sim_dir.exists():
+        # local dev: try the repo path relative to this file
+        sim_dir = Path(__file__).resolve().parents[3] / "simulator" / "public"
+    if sim_dir.exists():
+        app.mount("/sim", StaticFiles(directory=str(sim_dir), html=True), name="sim")
+        logger.info(f"Simulator UI mounted at /sim/ from {sim_dir}")
+    else:
+        logger.warning(f"Simulator UI directory not found ({sim_dir}); /sim tab will 404")
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -158,5 +224,63 @@ def create_app(config, engine, transport) -> FastAPI:
     @app.get("/api/logs")
     async def get_logs():
         return {"logs": _log_buffer[-100:]}
+
+    # ── Telemetry ───────────────────────────────────────────
+    @app.get("/api/telemetry")
+    async def get_telemetry():
+        if telemetry is None:
+            return {}
+        return telemetry.snapshot()
+
+    @app.get("/api/telemetry/temp-history")
+    async def get_temp_history():
+        if telemetry is None:
+            return {"samples": []}
+        return {"samples": telemetry.temp_history()}
+
+    # ── Field-debug AP toggle ───────────────────────────────
+    # The AP and the home WiFi STA can't safely run on the same wlan0
+    # vif at the same time, so the AP profile is dormant by default.
+    # Activating it WILL drop the home WiFi connection — that's the
+    # whole point in the field. The dashboard shows a confirmation.
+    @app.get("/api/ap")
+    async def ap_status():
+        return _ap_state()
+
+    @app.post("/api/ap/up")
+    async def ap_up():
+        try:
+            subprocess.run(
+                ["nmcli", "con", "up", AP_CON],
+                check=True, timeout=10,
+                capture_output=True,
+            )
+            logger.warning("Field-debug AP brought up — home WiFi will drop")
+            return _ap_state()
+        except subprocess.CalledProcessError as e:
+            return JSONResponse(
+                {"error": "nmcli failed", "stderr": e.stderr.decode(errors="ignore")},
+                status_code=500,
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.post("/api/ap/down")
+    async def ap_down():
+        try:
+            subprocess.run(
+                ["nmcli", "con", "down", AP_CON],
+                check=True, timeout=10,
+                capture_output=True,
+            )
+            logger.info("Field-debug AP taken down")
+            return _ap_state()
+        except subprocess.CalledProcessError as e:
+            return JSONResponse(
+                {"error": "nmcli failed", "stderr": e.stderr.decode(errors="ignore")},
+                status_code=500,
+            )
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
 
     return app

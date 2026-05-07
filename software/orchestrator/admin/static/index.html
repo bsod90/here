@@ -2,81 +2,174 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0a0a0e">
   <title>HERE — Admin</title>
-  <link rel="stylesheet" href="/static/admin.css?v=11">
+  <link rel="stylesheet" href="/static/admin.css?v=14">
 </head>
 <body>
-  <h1>HERE Experience</h1>
-  <div class="status-bar">
-    <div>Mode: <span id="s-mode">—</span></div>
-    <div>FPS: <span id="s-fps">—</span></div>
-    <div>Uptime: <span id="s-uptime">—</span></div>
-    <div>LEDs: <span id="s-led-w">—</span>W</div>
-    <div>Total: <span id="s-total-w">—</span>W</div>
-    <div>~<span id="s-daily">—</span>Wh/day</div>
-    <div>Battery: <span id="s-batt">—</span>d</div>
-  </div>
-
-  <h2>Targets</h2>
-  <div id="targets" class="target-list"></div>
-  <button id="add-target-btn">+ Add Target</button>
-
-  <h2>Mode</h2>
-  <div class="mode-buttons">
-    <button class="mode-btn" data-mode="breathing">Breathing</button>
-    <button class="mode-btn" data-mode="standby">Standby</button>
-    <button class="mode-btn" data-mode="debug">Debug</button>
-    <button class="mode-btn" data-mode="off">Off</button>
-  </div>
-
-  <h2>Sensor Simulation</h2>
-  <div class="sensor-buttons">
-    <button class="sensor-btn" onclick="sensor('occupied')">Bench Occupied</button>
-    <button class="sensor-btn" onclick="sensor('empty')">Bench Empty</button>
-  </div>
-
-  <h2>Transport</h2>
-  <div class="param-group">
-    <div style="margin-bottom:10px;">
-      <label style="color:#999;font-size:13px;margin-right:10px;">Protocol:</label>
-      <button class="mode-btn proto-btn" data-proto="ddp">DDP</button>
-      <button class="mode-btn proto-btn" data-proto="dnrgb">DNRGB</button>
+  <header class="topbar">
+    <div class="brand">HERE</div>
+    <div class="status-strip">
+      <span><b id="s-mode">—</b></span>
+      <span><span id="s-fps">—</span> fps</span>
+      <span id="s-uptime">—</span>
+      <span><span id="s-temp">—</span>°C</span>
+      <span class="t-pill" id="s-throttle" hidden></span>
     </div>
-    <div id="transport-params"></div>
-  </div>
+  </header>
 
-  <h2>Breathing Parameters</h2>
-  <div class="param-group" id="breathing-params"></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-tab="run">Run</button>
+    <button class="tab" data-tab="tune">Tune</button>
+    <button class="tab" data-tab="sim">Simulator</button>
+    <button class="tab" data-tab="telemetry">Telemetry</button>
+    <button class="tab" data-tab="logs">Logs</button>
+  </nav>
 
-  <h2>Spin Effect</h2>
-  <div class="param-group">
-    <div style="margin-bottom:10px;">
-      <label style="color:#999;font-size:13px;margin-right:10px;">Spin:</label>
-      <button class="mode-btn spin-toggle" data-val="false">Off</button>
-      <button class="mode-btn spin-toggle" data-val="true">On</button>
-      <span style="margin-left:16px;"></span>
-      <label style="color:#999;font-size:13px;margin-right:10px;">Mode:</label>
-      <button class="mode-btn spin-mode-btn" data-val="constant">Constant</button>
-      <button class="mode-btn spin-mode-btn" data-val="yoyo">Yo-Yo</button>
-      <span style="margin-left:16px;"></span>
-      <label style="color:#999;font-size:13px;margin-right:10px;">Direction:</label>
-      <button class="mode-btn spin-dir-btn" data-val="true">Reverse</button>
-      <button class="mode-btn spin-dir-btn" data-val="false">Same</button>
-    </div>
-    <div id="spin-params"></div>
-  </div>
+  <main>
+    <!-- ============================================================ -->
+    <section id="tab-run" class="pane active">
+      <h2>Mode</h2>
+      <div class="mode-buttons">
+        <button class="mode-btn" data-mode="breathing">Breathing</button>
+        <button class="mode-btn" data-mode="standby">Standby</button>
+        <button class="mode-btn" data-mode="debug">Debug</button>
+        <button class="mode-btn" data-mode="off">Off</button>
+      </div>
 
-  <h2>Palette</h2>
-  <div id="palette-selector" class="param-group"></div>
-  <div id="palette-editor" class="param-group" style="margin-top:6px;"></div>
+      <h2>Sensor Simulation</h2>
+      <div class="sensor-buttons">
+        <button class="sensor-btn" onclick="sensor('occupied')">Bench Occupied</button>
+        <button class="sensor-btn" onclick="sensor('empty')">Bench Empty</button>
+      </div>
 
-  <h2>Standby Parameters</h2>
-  <div class="param-group" id="standby-params"></div>
+      <h2>Targets</h2>
+      <div id="targets" class="target-list"></div>
+      <button id="add-target-btn">+ Add Target</button>
 
-  <h2>Logs</h2>
-  <div id="log-viewer"></div>
+      <h2>Power</h2>
+      <div class="param-group" id="power-card">
+        <div class="kv-row"><span>LEDs</span><span><b id="s-led-w">—</b> W</span></div>
+        <div class="kv-row"><span>Total</span><span><b id="s-total-w">—</b> W</span></div>
+        <div class="kv-row"><span>Daily</span><span>~<b id="s-daily">—</b> Wh</span></div>
+        <div class="kv-row"><span>Battery</span><span><b id="s-batt">—</b> d</span></div>
+      </div>
+    </section>
 
-  <script src="/static/admin.js?v=11"></script>
+    <!-- ============================================================ -->
+    <section id="tab-tune" class="pane">
+      <h2>Transport</h2>
+      <div class="param-group">
+        <div id="transport-params"></div>
+      </div>
+
+      <h2>Breathing Parameters</h2>
+      <div class="param-group" id="breathing-params"></div>
+
+      <h2>Spin Effect</h2>
+      <div class="param-group">
+        <div class="row-line">
+          <label class="dim">Spin</label>
+          <button class="mode-btn spin-toggle" data-val="false">Off</button>
+          <button class="mode-btn spin-toggle" data-val="true">On</button>
+        </div>
+        <div class="row-line">
+          <label class="dim">Mode</label>
+          <button class="mode-btn spin-mode-btn" data-val="constant">Constant</button>
+          <button class="mode-btn spin-mode-btn" data-val="yoyo">Yo-Yo</button>
+        </div>
+        <div class="row-line">
+          <label class="dim">Direction</label>
+          <button class="mode-btn spin-dir-btn" data-val="true">Reverse</button>
+          <button class="mode-btn spin-dir-btn" data-val="false">Same</button>
+        </div>
+        <div id="spin-params"></div>
+      </div>
+
+      <h2>Palette</h2>
+      <div id="palette-selector" class="param-group"></div>
+      <div id="palette-editor" class="param-group" style="margin-top:6px;"></div>
+
+      <h2>Standby Parameters</h2>
+      <div class="param-group" id="standby-params"></div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="tab-sim" class="pane">
+      <div class="sim-header">
+        <span class="dim">Live mirror of the WLED feed.</span>
+        <button id="sim-reload" class="mode-btn" title="Reload simulator">↻</button>
+      </div>
+      <iframe id="sim-iframe" class="sim-frame" src="about:blank" title="HERE Simulator"></iframe>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="tab-telemetry" class="pane">
+      <h2>System</h2>
+      <div class="cards">
+        <div class="card">
+          <div class="card-label">CPU temp</div>
+          <div class="card-val"><span id="t-temp">—</span>°C</div>
+          <svg id="temp-chart" class="sparkline" viewBox="0 0 200 60" preserveAspectRatio="none">
+            <path d="" stroke="currentColor" fill="none" stroke-width="1.5"/>
+            <path d="" class="fill" fill="currentColor" opacity="0.15"/>
+          </svg>
+        </div>
+        <div class="card">
+          <div class="card-label">Uptime</div>
+          <div class="card-val" id="t-uptime">—</div>
+          <div class="card-sub" id="t-loadavg">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Memory</div>
+          <div class="card-val" id="t-mem">—</div>
+          <div class="card-sub" id="t-mem-total">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Disk (root)</div>
+          <div class="card-val" id="t-disk">—</div>
+          <div class="card-sub" id="t-disk-total">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Throttle status</div>
+          <div class="t-pills" id="t-throttle">—</div>
+        </div>
+        <div class="card">
+          <div class="card-label">WiFi (home)</div>
+          <div class="card-val" id="t-wifi">—</div>
+          <div class="card-sub" id="t-wifi-sub">—</div>
+        </div>
+        <div class="card" id="ap-card">
+          <div class="card-label">Field-debug AP</div>
+          <div class="card-val" id="t-ap">—</div>
+          <div class="card-sub" id="t-ap-sub">—</div>
+          <div class="ap-controls">
+            <button id="ap-up-btn" class="mode-btn">Bring Up</button>
+            <button id="ap-down-btn" class="mode-btn">Take Down</button>
+          </div>
+          <div class="card-warn" id="ap-warn" hidden>⚠ activating the AP drops home WiFi.</div>
+        </div>
+        <div class="card">
+          <div class="card-label">eth0 → WLED</div>
+          <div class="card-val" id="t-eth">—</div>
+          <div class="card-sub" id="t-eth-sub">—</div>
+        </div>
+      </div>
+
+      <h2>Recent boots</h2>
+      <div class="param-group">
+        <div id="t-boots" class="boot-list">—</div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="tab-logs" class="pane">
+      <h2>Logs</h2>
+      <div id="log-viewer"></div>
+    </section>
+  </main>
+
+  <script src="/static/admin.js?v=14"></script>
 </body>
 </html>

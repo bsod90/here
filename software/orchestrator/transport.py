@@ -1,7 +1,9 @@
-"""Multi-target LED transport — DDP (Distributed Display Protocol) + DNRGB fallback.
+"""Multi-target LED transport — DDP only.
 
-DDP is the primary transport (port 4048). It has proper multi-packet framing
-so the receiver knows when a complete frame has arrived.
+DDP (Distributed Display Protocol, port 4048) has proper multi-packet
+framing so the receiver knows when a complete frame has arrived. We
+used to also support DNRGB as a fallback, but in practice DDP is what
+WLED handles correctly for the 1936-pixel matrix; DNRGB was removed.
 
 DDP packet format (10-byte header + data):
   Byte 0:    Flags (VER1=0x40, PUSH=0x01, TIMECODE=0x10)
@@ -30,22 +32,6 @@ DDP_FLAGS_VER1 = 0x40
 DDP_FLAGS_PUSH = 0x01  # signals last packet of a frame
 DDP_TYPE_RGB8 = 0x01
 DDP_SOURCE_ID = 0x01
-
-# DNRGB constants (fallback)
-DNRGB_PORT = 21324
-DNRGB_PROTOCOL = 4
-DNRGB_MAX_LEDS = 489
-
-
-def _find_source_ip_for(target_ip: str) -> str:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect((target_ip, 1))
-        local_ip = s.getsockname()[0]
-        s.close()
-        return local_ip
-    except Exception:
-        return ""
 
 
 class UDPTransport:
@@ -82,22 +68,18 @@ class UDPTransport:
 
     def send_frame(self, frame: bytearray):
         with self._lock:
-            enabled = [(t["ip"].split("/")[0].strip(), t["port"]) for t in self._targets if t["enabled"]]
+            enabled = [
+                (t["ip"].split("/")[0].strip(), t["port"])
+                for t in self._targets if t["enabled"]
+            ]
 
         if not enabled:
             return
 
-        params = self._config.get("transport")
-        protocol = params.get("protocol", "ddp")
-        delay = params.get("inter_packet_ms", 0) / 1000.0
-
-        if protocol == "ddp":
-            self._send_ddp(frame, enabled, delay)
-        else:
-            self._send_dnrgb(frame, enabled, params, delay)
+        delay = (self._config.get("transport") or {}).get("inter_packet_ms", 0) / 1000.0
+        self._send_ddp(frame, enabled, delay)
 
     def _send_ddp(self, frame: bytearray, targets, delay):
-        """Send frame via DDP protocol (port 4048)."""
         total_bytes = len(frame)
         self._seq = (self._seq % 15) + 1  # sequence 1-15
 
@@ -130,34 +112,6 @@ class UDPTransport:
 
             offset += chunk
             if offset < total_bytes and delay > 0:
-                time.sleep(delay)
-
-    def _send_dnrgb(self, frame: bytearray, targets, params, delay):
-        """Send frame via DNRGB protocol (port 21324). Fallback."""
-        timeout = params.get("timeout", 255)
-        max_leds = min(params.get("max_leds_per_packet", 489), DNRGB_MAX_LEDS)
-        total_leds = len(frame) // 3
-
-        packets = []
-        led = 0
-        while led < total_leds:
-            chunk = min(max_leds, total_leds - led)
-            pkt = bytearray(4 + chunk * 3)
-            pkt[0] = DNRGB_PROTOCOL
-            pkt[1] = timeout
-            pkt[2] = (led >> 8) & 0xFF
-            pkt[3] = led & 0xFF
-            pkt[4:] = frame[led * 3:(led + chunk) * 3]
-            packets.append(pkt)
-            led += chunk
-
-        for i, pkt in enumerate(packets):
-            for ip, port in targets:
-                try:
-                    self._sock.sendto(pkt, (ip, port))
-                except Exception:
-                    pass
-            if i < len(packets) - 1 and delay > 0:
                 time.sleep(delay)
 
     def _health_loop(self):

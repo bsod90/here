@@ -2,6 +2,39 @@
 
 let config = {};
 
+// ── Tabs ───────────────────────────────────────────────────
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.onclick = () => {
+    const id = btn.dataset.tab;
+    document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.pane').forEach(p =>
+      p.classList.toggle('active', p.id === `tab-${id}`)
+    );
+    if (id === 'telemetry') refreshTelemetry();
+    if (id === 'sim') openSimulator();
+  };
+});
+
+// ── Simulator iframe (lazy-load so WebGL doesn't run when hidden) ──
+function openSimulator() {
+  const f = document.getElementById('sim-iframe');
+  if (!f.src || f.src === 'about:blank') f.src = '/sim/';
+}
+function closeSimulator() {
+  const f = document.getElementById('sim-iframe');
+  f.src = 'about:blank';
+}
+document.getElementById('sim-reload').onclick = () => {
+  const f = document.getElementById('sim-iframe');
+  f.src = '/sim/?t=' + Date.now();
+};
+// When leaving the sim tab, free the iframe (and its WebGL context).
+document.querySelectorAll('.tab').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab !== 'sim') closeSimulator();
+  });
+});
+
 // ── API helpers ────────────────────────────────────────────
 async function api(path, opts = {}) {
   const r = await fetch('/api/' + path, {
@@ -206,14 +239,24 @@ function debouncedUpdate(section, key, value) {
 }
 
 // ── Status polling ─────────────────────────────────────────
+function fmtUptime(seconds) {
+  if (seconds == null) return '—';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  if (d) return `${d}d ${h}h`;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 async function pollStatus() {
   try {
     const s = await api('status');
     document.getElementById('s-mode').textContent = s.mode;
     document.getElementById('s-fps').textContent = s.fps;
-    const m = Math.floor(s.uptime_s / 60);
-    const sec = s.uptime_s % 60;
-    document.getElementById('s-uptime').textContent = `${m}m ${sec}s`;
+    document.getElementById('s-uptime').textContent = fmtUptime(s.uptime_s);
     if (s.power) {
       document.getElementById('s-led-w').textContent = s.power.led_watts;
       document.getElementById('s-total-w').textContent = s.power.total_watts;
@@ -221,7 +264,6 @@ async function pollStatus() {
       document.getElementById('s-batt').textContent = s.power.battery_days;
     }
     updateModeButtons(s.mode);
-    updateProtoButtons(config.transport?.protocol || 'ddp');
     // Keep spin toggles in sync
     const spin = config.breathing?.spin || {};
     document.querySelectorAll('.spin-toggle').forEach(b =>
@@ -234,6 +276,185 @@ async function pollStatus() {
       b.classList.toggle('active', String(spin.yoyo_reverse ?? true) === b.dataset.val)
     );
   } catch {}
+}
+
+// ── Telemetry ──────────────────────────────────────────────
+function fmtBytes(b) {
+  if (b == null) return '—';
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+  return `${b.toFixed(b < 10 ? 1 : 0)} ${u[i]}`;
+}
+
+function tempClass(c) {
+  if (c == null) return '';
+  if (c >= 80) return 'bad';
+  if (c >= 70) return 'warn';
+  return '';
+}
+
+async function refreshTelemetry() {
+  let snap, hist;
+  try {
+    [snap, hist] = await Promise.all([
+      api('telemetry'),
+      api('telemetry/temp-history'),
+    ]);
+  } catch { return; }
+
+  // ── Topbar mini-display (always updated) ─
+  if (snap.cpu_temp_c != null) {
+    document.getElementById('s-temp').textContent = snap.cpu_temp_c;
+  }
+  const t = snap.throttle || {};
+  const throttleNow = t.undervoltage_now || t.throttled_now || t.soft_temp_limit_now;
+  const tEl = document.getElementById('s-throttle');
+  if (throttleNow) {
+    tEl.textContent = '⚠ throttling';
+    tEl.className = 't-pill now';
+    tEl.hidden = false;
+  } else {
+    tEl.hidden = true;
+  }
+
+  // If telemetry tab isn't visible, no need to redraw cards
+  if (!document.getElementById('tab-telemetry').classList.contains('active')) return;
+
+  // ── Temp card + sparkline ─
+  const tempEl = document.getElementById('t-temp');
+  tempEl.textContent = snap.cpu_temp_c ?? '—';
+  tempEl.parentElement.querySelector('.card-val').className =
+    `card-val ${tempClass(snap.cpu_temp_c)}`;
+  drawSparkline(hist.samples || []);
+
+  // ── Uptime ─
+  document.getElementById('t-uptime').textContent = fmtUptime(snap.system_uptime_s);
+  document.getElementById('t-loadavg').textContent =
+    snap.loadavg ? `load ${snap.loadavg.map(x => x.toFixed(2)).join(' ')}` : '—';
+
+  // ── Memory ─
+  if (snap.mem_total_kb && snap.mem_avail_kb != null) {
+    const usedKb = snap.mem_total_kb - snap.mem_avail_kb;
+    const pct = Math.round(100 * usedKb / snap.mem_total_kb);
+    document.getElementById('t-mem').textContent = `${pct}%`;
+    document.getElementById('t-mem-total').textContent =
+      `${fmtBytes(usedKb * 1024)} / ${fmtBytes(snap.mem_total_kb * 1024)}`;
+  }
+
+  // ── Disk ─
+  if (snap.disk_total_b && snap.disk_free_b != null) {
+    const used = snap.disk_total_b - snap.disk_free_b;
+    const pct = Math.round(100 * used / snap.disk_total_b);
+    document.getElementById('t-disk').textContent = `${pct}%`;
+    document.getElementById('t-disk-total').textContent =
+      `${fmtBytes(used)} / ${fmtBytes(snap.disk_total_b)}`;
+  }
+
+  // ── Throttle pills ─
+  const tEl2 = document.getElementById('t-throttle');
+  tEl2.innerHTML = '';
+  const tt = snap.throttle;
+  if (!tt) {
+    tEl2.textContent = '—';
+  } else {
+    const items = [
+      ['Undervolt now',   tt.undervoltage_now,    'now'],
+      ['Throttled now',   tt.throttled_now,       'now'],
+      ['Freq capped now', tt.freq_capped_now,     'now'],
+      ['Soft temp now',   tt.soft_temp_limit_now, 'now'],
+      ['Undervolt ever',  tt.undervoltage_ever,   'ever'],
+      ['Throttled ever',  tt.throttled_ever,      'ever'],
+    ];
+    const anyFlag = items.some(([, v]) => v);
+    if (!anyFlag) {
+      tEl2.innerHTML = '<span class="t-pill ok">all clear</span>';
+    } else {
+      items.forEach(([label, v, sev]) => {
+        if (v) {
+          const span = document.createElement('span');
+          span.className = `t-pill ${sev}`;
+          span.textContent = label;
+          tEl2.appendChild(span);
+        }
+      });
+    }
+  }
+
+  // ── WiFi / AP / eth0 ─
+  document.getElementById('t-wifi').textContent =
+    snap.wifi_ssid ? snap.wifi_ssid : '—';
+  document.getElementById('t-wifi-sub').textContent = [
+    snap.wifi_signal_dbm != null ? `${snap.wifi_signal_dbm} dBm` : null,
+    snap.addrs?.wlan0,
+  ].filter(Boolean).join(' · ') || '—';
+
+  // AP card uses live /api/ap (more authoritative than the cached snapshot)
+  try {
+    const ap = await api('ap');
+    const valEl = document.getElementById('t-ap');
+    const subEl = document.getElementById('t-ap-sub');
+    const cardEl = document.getElementById('ap-card');
+    const warnEl = document.getElementById('ap-warn');
+    if (!ap.defined) {
+      valEl.textContent = 'not configured';
+      subEl.textContent = 'set AP_SSID/AP_PSK in .env, redeploy';
+      cardEl.classList.remove('up');
+      warnEl.hidden = true;
+    } else if (ap.active) {
+      valEl.textContent = `up (${snap.ap_clients ?? 0} client${snap.ap_clients === 1 ? '' : 's'})`;
+      subEl.textContent = '192.168.50.1';
+      cardEl.classList.add('up');
+      warnEl.hidden = false;
+    } else {
+      valEl.textContent = 'dormant';
+      subEl.textContent = 'tap "Bring Up" when home WiFi is gone';
+      cardEl.classList.remove('up');
+      warnEl.hidden = false;
+    }
+    document.getElementById('ap-up-btn').disabled = ap.active;
+    document.getElementById('ap-down-btn').disabled = !ap.active;
+  } catch {}
+
+  document.getElementById('t-eth').textContent = snap.eth0_state || '—';
+  document.getElementById('t-eth-sub').textContent = snap.addrs?.eth0 || '';
+
+  // ── Recent boots ─
+  const bootsEl = document.getElementById('t-boots');
+  bootsEl.innerHTML = '';
+  if (snap.recent_boots && snap.recent_boots.length) {
+    snap.recent_boots.slice().reverse().forEach(b => {
+      const row = document.createElement('div');
+      row.className = 'b-row';
+      row.innerHTML = `<span class="b-idx">${b.idx}</span><span class="b-range">${b.range}</span>`;
+      bootsEl.appendChild(row);
+    });
+  } else {
+    bootsEl.textContent = '—';
+  }
+}
+
+function drawSparkline(samples) {
+  const svg = document.getElementById('temp-chart');
+  const W = 200, H = 60, PAD = 4;
+  if (!samples.length) {
+    svg.querySelectorAll('path').forEach(p => p.setAttribute('d', ''));
+    return;
+  }
+  const ys = samples.map(s => s.c);
+  let lo = Math.min(...ys), hi = Math.max(...ys);
+  if (hi - lo < 5) { lo = Math.floor(lo) - 2; hi = Math.ceil(hi) + 2; }
+  const sx = (i) => PAD + i * (W - PAD * 2) / Math.max(1, samples.length - 1);
+  const sy = (c) => PAD + (1 - (c - lo) / (hi - lo)) * (H - PAD * 2);
+  let line = '';
+  let fill = `M ${sx(0)} ${H} L `;
+  samples.forEach((s, i) => {
+    line += (i === 0 ? 'M ' : 'L ') + sx(i).toFixed(1) + ' ' + sy(s.c).toFixed(1) + ' ';
+    fill += sx(i).toFixed(1) + ' ' + sy(s.c).toFixed(1) + ' ';
+  });
+  fill += `L ${sx(samples.length - 1)} ${H} Z`;
+  svg.querySelector('path').setAttribute('d', line);
+  svg.querySelector('path.fill').setAttribute('d', fill);
 }
 
 // ── Logs ───────────────────────────────────────────────────
@@ -401,35 +622,29 @@ function updatePaletteGradients() {
   });
 }
 
-// ── Protocol buttons ───────────────────────────────────────
-function initProtocolButtons() {
-  const current = config.transport?.protocol || 'ddp';
-  updateProtoButtons(current);
-  document.querySelectorAll('.proto-btn').forEach(btn => {
-    btn.onclick = async () => {
-      const proto = btn.dataset.proto;
-      await api('config', {
-        method: 'PUT',
-        body: JSON.stringify({ transport: { protocol: proto } }),
-      });
-      updateProtoButtons(proto);
-      config.transport.protocol = proto;
-    };
-  });
+// ── Field-debug AP toggle ──────────────────────────────────
+async function setApState(up) {
+  if (up && !confirm(
+    'Bringing up the field-debug AP will drop home WiFi.\n\n' +
+    'Reconnect by joining "here-debug" on your phone, then SSH/dashboard at 192.168.50.1.\n\n' +
+    'Proceed?'
+  )) return;
+  try {
+    await api(`ap/${up ? 'up' : 'down'}`, { method: 'POST' });
+  } catch {}
+  // After taking down, refresh; after bringing up, the laptop loses
+  // connectivity to the Pi anyway so just leave it.
+  if (!up) refreshTelemetry();
 }
 
-function updateProtoButtons(active) {
-  document.querySelectorAll('.proto-btn').forEach(b =>
-    b.classList.toggle('active', b.dataset.proto === active)
-  );
-}
+document.getElementById('ap-up-btn').onclick   = () => setApState(true);
+document.getElementById('ap-down-btn').onclick = () => setApState(false);
 
 // ── Init ───────────────────────────────────────────────────
 async function init() {
   config = await api('config');
   updateModeButtons(config.mode);
   buildSliders('transport-params', 'transport', TRANSPORT_SLIDERS);
-  initProtocolButtons();
   buildSliders('breathing-params', 'breathing', BREATHING_SLIDERS);
   initSpinControls();
   buildPaletteSelector();
@@ -439,6 +654,10 @@ async function init() {
   setInterval(pollStatus, 1000);
   setInterval(loadTargets, 5000);
   setInterval(pollLogs, 2000);
+  // Telemetry: prime once now (so the topbar temp/throttle pill populates),
+  // then refresh on a slow cadence and on tab activation.
+  refreshTelemetry();
+  setInterval(refreshTelemetry, 5000);
 }
 
 init();

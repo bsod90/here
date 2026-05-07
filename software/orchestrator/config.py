@@ -5,18 +5,17 @@ import threading
 from pathlib import Path
 
 DEFAULT_CONFIG = {
+    # The embedded simulator UI consumes frames over WebSocket
+    # (`/sim/ws`), so it doesn't need its own UDP target. Add other WLED
+    # boxes here if there's ever more than one.
     "targets": [
-        {"name": "Simulator", "ip": "127.0.0.1", "port": 21324, "enabled": True},
         {"name": "WLED Controller", "ip": "192.168.10.20", "port": 21324, "enabled": True},
     ],
     "mode": "breathing",
 
     "transport": {
-        "protocol": "ddp",
         "inter_packet_ms": 0,
         "fps": 30,
-        "timeout": 255,
-        "max_leds_per_packet": 489,
     },
 
     "breathing": {

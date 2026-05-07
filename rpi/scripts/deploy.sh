@@ -24,7 +24,9 @@ fi
 PI_HOST="${PI_HOST:-here.local}"
 PI_USER="${PI_USER:-here}"
 PI_TARGET="${PI_USER}@${PI_HOST}"
-STAGE='~/here-stage'
+# Absolute path so it resolves identically under both `here` and root
+# (when install.sh is invoked via sudo, `~` would otherwise expand to /root).
+STAGE="/home/${PI_USER}/here-stage"
 
 echo "→ deploying to ${PI_TARGET}"
 
@@ -49,8 +51,19 @@ rsync -az --delete \
     --exclude '__pycache__' --exclude '*.pyc' --exclude '.venv' \
     software/orchestrator/ "${PI_TARGET}:${STAGE}/orchestrator/"
 
-# Run install (idempotent)
-ssh "$PI_TARGET" "sudo bash ${STAGE}/rpi/scripts/install.sh"
+# rsync simulator UI (static assets only — no Node server). The
+# orchestrator serves these at /sim/ and feeds them frames over WS.
+rsync -az --delete \
+    --exclude '__pycache__' --exclude '*.pyc' \
+    software/simulator/public/ "${PI_TARGET}:${STAGE}/simulator/"
+
+# Run install (idempotent). Pass AP creds via stdin so they don't end up
+# in argv / process listings or persist on disk on the Pi.
+ssh "$PI_TARGET" "sudo bash -s" <<EOF
+export AP_SSID="${AP_SSID:-}"
+export AP_PSK="${AP_PSK:-}"
+bash ${STAGE}/rpi/scripts/install.sh
+EOF
 
 if [ "${FORCE_REBOOT:-0}" = "1" ]; then
     echo "→ rebooting Pi"

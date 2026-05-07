@@ -1,0 +1,12 @@
+/* Grant full NetworkManager control to members of the `netdev` group.
+ * The orchestrator (running as user `here`, member of netdev) toggles
+ * the field-debug AP on/off via nmcli — without this, polkit refuses
+ * with "Not authorized to control networking" even with NM permissions
+ * supposedly delegated to netdev.
+ */
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.NetworkManager.") === 0 &&
+        subject.isInGroup("netdev")) {
+        return polkit.Result.YES;
+    }
+});

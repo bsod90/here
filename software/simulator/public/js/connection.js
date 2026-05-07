@@ -16,7 +16,11 @@ export function connectWebSocket(leds) {
 
   function connect() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${protocol}//${location.host}/ws`);
+    // Resolve /ws relative to wherever this page is hosted:
+    //   served by the standalone Node sim → /ws
+    //   embedded in the HERE orchestrator at /sim/ → /sim/ws
+    const base = location.pathname.replace(/\/[^/]*$/, '');
+    ws = new WebSocket(`${protocol}//${location.host}${base}/ws`);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = () => {

@@ -1,0 +1,16 @@
+[Unit]
+Description=Field-debug AP fallback (bring up if home WiFi doesn't connect)
+After=NetworkManager.service systemd-user-sessions.service
+Wants=NetworkManager.service
+ConditionPathExists=/usr/local/sbin/here-wifi-fallback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/here-wifi-fallback
+TimeoutStartSec=3min
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

@@ -6,6 +6,8 @@ import uvicorn
 from config import ConfigManager
 from transport import UDPTransport
 from animation_engine import AnimationEngine
+from telemetry import Telemetry
+from simulator_ws import SimulatorBus
 from admin.routes import create_app, LogHandler
 
 
@@ -30,16 +32,20 @@ def main():
     # Init
     config = ConfigManager(path=args.config)
     transport = UDPTransport(config.get("targets") or [], config)
-    engine = AnimationEngine(config, transport)
-    app = create_app(config, engine, transport)
+    sim_bus = SimulatorBus()
+    engine = AnimationEngine(config, transport, sim_bus=sim_bus)
+    telemetry = Telemetry()
+    app = create_app(config, engine, transport, telemetry, sim_bus)
 
-    # Start animation
+    # Start background workers
     engine.start()
+    telemetry.start()
     logger.info(f"HERE Experience running — admin at http://{args.host}:{args.port}")
 
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     finally:
+        telemetry.stop()
         engine.stop()
         transport.stop()
 

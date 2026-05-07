@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class AnimationEngine:
-    def __init__(self, config, transport):
+    def __init__(self, config, transport, sim_bus=None):
         self.config = config
         self.transport = transport
+        self.sim_bus = sim_bus
         self.frame = bytearray(FRAME_BYTES)
         self._mode = config.get("mode") or "breathing"
         self._running = False
@@ -107,6 +108,11 @@ class AnimationEngine:
                     self.frame[i] = 0
 
             self.transport.send_frame(self.frame)
+
+            # Mirror the same frame to any simulator UI clients so what
+            # they render matches what WLED is rendering.
+            if self.sim_bus is not None:
+                self.sim_bus.push_frame(self.frame)
 
             # Power estimate: 30-second rolling average
             rgb_sum = sum(self.frame)
