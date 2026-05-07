@@ -65,98 +65,10 @@ export function createBench() {
     group.add(leg);
   }
 
-  // ── Seated figure — 5'7" (1700mm) genderless grey person ──
-  // Thinking pose: leaning forward, head tilted down, elbows on knees
-  const seatY = slabBottomY + SLAB_H; // top of slab
-  const floorY = JOIST_H + PLY + 3;
-  const skinMat = new THREE.MeshStandardMaterial({
-    color: 0x777777,
-    roughness: 0.7,
-    metalness: 0.1,
-  });
-
-  const person = new THREE.Group();
-  const lean = 0.35;
-  const hipZ = 0;
-
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(140, 400, 160), skinMat);
-  torso.position.set(0, seatY + 220, hipZ + 50);
-  torso.rotation.x = lean;
-  torso.castShadow = true;
-  person.add(torso);
-
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(28, 35, 70, 8), skinMat);
-  neck.position.set(0, seatY + 440, hipZ + 120);
-  neck.rotation.x = lean + 0.15;
-  person.add(neck);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(80, 10, 8), skinMat);
-  head.position.set(0, seatY + 510, hipZ + 150);
-  head.castShadow = true;
-  person.add(head);
-
-  const kneeZ = hipZ + 380;
-  for (const side of [-1, 1]) {
-    const thigh = new THREE.Mesh(new THREE.CylinderGeometry(45, 50, 430, 8), skinMat);
-    thigh.position.set(side * 75, seatY - 10, hipZ + 190);
-    thigh.rotation.x = Math.PI / 2 - 0.15;
-    thigh.castShadow = true;
-    person.add(thigh);
-  }
-
-  const kneeY = seatY - 40;
-  const ankleY = floorY + 60;
-  const shinLen = kneeY - ankleY;
-  for (const side of [-1, 1]) {
-    const shin = new THREE.Mesh(new THREE.CylinderGeometry(38, 35, shinLen, 8), skinMat);
-    shin.position.set(side * 75, (kneeY + ankleY) / 2, kneeZ + 20);
-    shin.rotation.x = 0.08;
-    shin.castShadow = true;
-    person.add(shin);
-  }
-
-  for (const side of [-1, 1]) {
-    const foot = new THREE.Mesh(new THREE.BoxGeometry(80, 45, 180), skinMat);
-    foot.position.set(side * 75, floorY + 22, kneeZ + 60);
-    foot.castShadow = true;
-    person.add(foot);
-  }
-
-  for (const side of [-1, 1]) {
-    const upperArm = new THREE.Mesh(new THREE.CylinderGeometry(32, 30, 250, 8), skinMat);
-    upperArm.position.set(side * 120, seatY + 260, hipZ + 140);
-    upperArm.rotation.x = 0.8;
-    upperArm.rotation.z = side * -0.25;
-    upperArm.castShadow = true;
-    person.add(upperArm);
-  }
-
-  for (const side of [-1, 1]) {
-    const forearm = new THREE.Mesh(new THREE.CylinderGeometry(28, 25, 220, 8), skinMat);
-    forearm.position.set(side * 55, seatY + 80, kneeZ - 60);
-    forearm.rotation.x = 1.1;
-    forearm.rotation.z = side * 0.35;
-    forearm.castShadow = true;
-    person.add(forearm);
-  }
-
-  const hands = new THREE.Mesh(new THREE.SphereGeometry(38, 8, 6), skinMat);
-  hands.position.set(0, seatY + 30, kneeZ - 10);
-  hands.castShadow = true;
-  person.add(hands);
-
-  group.add(person);
-
+  // Bench is fixed parallel (long axis along world X) at the back of
+  // the platform. Orientation is no longer user-toggleable.
   group.position.z = BENCH_Z_OFFSET;
-  let currentAngle = 0;
-  group.rotation.y = currentAngle;
+  group.rotation.y = 0;
 
-  return {
-    group,
-    get angle() { return currentAngle; },
-    setAngle(angle) {
-      currentAngle = angle;
-      group.rotation.y = angle;
-    },
-  };
+  return { group };
 }

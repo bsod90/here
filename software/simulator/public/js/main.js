@@ -19,23 +19,6 @@ scene.add(elecBox.group);
 const leds = createLedSystem(scene);
 const ws = connectWebSocket(leds);
 
-// ── Bench orientation toggle ───────────────────────────────
-const DIAGONAL = Math.PI / 4;
-const PARALLEL = 0;
-let isDiagonal = false;
-
-function switchBenchAngle() {
-  isDiagonal = !isDiagonal;
-  bench.setAngle(isDiagonal ? DIAGONAL : PARALLEL);
-  toggleBtn.textContent = isDiagonal ? 'Diagonal' : 'Parallel';
-}
-
-const toggleBtn = document.createElement('button');
-toggleBtn.textContent = 'Parallel';
-toggleBtn.id = 'bench-toggle';
-document.body.appendChild(toggleBtn);
-toggleBtn.addEventListener('click', switchBenchAngle);
-
 // ── FPS counter ────────────────────────────────────────────
 const fpsEl = document.getElementById('fps');
 let frameCount = 0;
