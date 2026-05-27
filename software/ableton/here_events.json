@@ -1,0 +1,293 @@
+{
+  "base_pitch": 36,
+  "events": [
+    {
+      "index": 0,
+      "pitch": 36,
+      "label": "Expand",
+      "event": "expand",
+      "params": {}
+    },
+    {
+      "index": 1,
+      "pitch": 37,
+      "label": "Contract",
+      "event": "contract",
+      "params": {}
+    },
+    {
+      "index": 2,
+      "pitch": 38,
+      "label": "Rotate CW",
+      "event": "rotate_cw",
+      "params": {}
+    },
+    {
+      "index": 3,
+      "pitch": 39,
+      "label": "Rotate CCW",
+      "event": "rotate_ccw",
+      "params": {}
+    },
+    {
+      "index": 4,
+      "pitch": 40,
+      "label": "Pulse",
+      "event": "pulse",
+      "params": {}
+    },
+    {
+      "index": 5,
+      "pitch": 41,
+      "label": "Blow Out",
+      "event": "blow_out",
+      "params": {}
+    },
+    {
+      "index": 6,
+      "pitch": 42,
+      "label": "Regrow",
+      "event": "regrow",
+      "params": {}
+    },
+    {
+      "index": 7,
+      "pitch": 43,
+      "label": "Dissolve",
+      "event": "dissolve",
+      "params": {}
+    },
+    {
+      "index": 8,
+      "pitch": 44,
+      "label": "Respawn",
+      "event": "respawn",
+      "params": {}
+    },
+    {
+      "index": 9,
+      "pitch": 45,
+      "label": "Palette 1",
+      "event": "color_palette",
+      "params": {
+        "palette": 0
+      }
+    },
+    {
+      "index": 10,
+      "pitch": 46,
+      "label": "Palette 2",
+      "event": "color_palette",
+      "params": {
+        "palette": 1
+      }
+    },
+    {
+      "index": 11,
+      "pitch": 47,
+      "label": "Palette 3",
+      "event": "color_palette",
+      "params": {
+        "palette": 2
+      }
+    },
+    {
+      "index": 12,
+      "pitch": 48,
+      "label": "Palette 4",
+      "event": "color_palette",
+      "params": {
+        "palette": 3
+      }
+    },
+    {
+      "index": 13,
+      "pitch": 49,
+      "label": "Push L",
+      "event": "push_left",
+      "params": {}
+    },
+    {
+      "index": 14,
+      "pitch": 50,
+      "label": "Push R",
+      "event": "push_right",
+      "params": {}
+    },
+    {
+      "index": 15,
+      "pitch": 51,
+      "label": "Push U",
+      "event": "push_up",
+      "params": {}
+    },
+    {
+      "index": 16,
+      "pitch": 52,
+      "label": "Push D",
+      "event": "push_down",
+      "params": {}
+    },
+    {
+      "index": 17,
+      "pitch": 53,
+      "label": "Pull Center",
+      "event": "pull_center",
+      "params": {}
+    },
+    {
+      "index": 18,
+      "pitch": 54,
+      "label": "Outer CW",
+      "event": "rotate_cw_outer",
+      "params": {}
+    },
+    {
+      "index": 19,
+      "pitch": 55,
+      "label": "Outer CCW",
+      "event": "rotate_ccw_outer",
+      "params": {}
+    },
+    {
+      "index": 20,
+      "pitch": 56,
+      "label": "Middle CW",
+      "event": "rotate_cw_middle",
+      "params": {}
+    },
+    {
+      "index": 21,
+      "pitch": 57,
+      "label": "Middle CCW",
+      "event": "rotate_ccw_middle",
+      "params": {}
+    },
+    {
+      "index": 22,
+      "pitch": 58,
+      "label": "Inner CW",
+      "event": "rotate_cw_inner",
+      "params": {}
+    },
+    {
+      "index": 23,
+      "pitch": 59,
+      "label": "Inner CCW",
+      "event": "rotate_ccw_inner",
+      "params": {}
+    },
+    {
+      "index": 24,
+      "pitch": 60,
+      "label": "Stop Rot All",
+      "event": "stop_rotation",
+      "params": {}
+    },
+    {
+      "index": 25,
+      "pitch": 61,
+      "label": "Stop Outer",
+      "event": "stop_rotation_outer",
+      "params": {}
+    },
+    {
+      "index": 26,
+      "pitch": 62,
+      "label": "Stop Middle",
+      "event": "stop_rotation_middle",
+      "params": {}
+    },
+    {
+      "index": 27,
+      "pitch": 63,
+      "label": "Stop Inner",
+      "event": "stop_rotation_inner",
+      "params": {}
+    },
+    {
+      "index": 28,
+      "pitch": 64,
+      "label": "Push Random",
+      "event": "push_random",
+      "params": {}
+    },
+    {
+      "index": 29,
+      "pitch": 65,
+      "label": "Show Outer",
+      "event": "show_outer",
+      "params": {}
+    },
+    {
+      "index": 30,
+      "pitch": 66,
+      "label": "Hide Outer",
+      "event": "hide_outer",
+      "params": {}
+    },
+    {
+      "index": 31,
+      "pitch": 67,
+      "label": "Show Middle",
+      "event": "show_middle",
+      "params": {}
+    },
+    {
+      "index": 32,
+      "pitch": 68,
+      "label": "Hide Middle",
+      "event": "hide_middle",
+      "params": {}
+    },
+    {
+      "index": 33,
+      "pitch": 69,
+      "label": "Show Inner",
+      "event": "show_inner",
+      "params": {}
+    },
+    {
+      "index": 34,
+      "pitch": 70,
+      "label": "Hide Inner",
+      "event": "hide_inner",
+      "params": {}
+    },
+    {
+      "index": 35,
+      "pitch": 71,
+      "label": "Meteors",
+      "event": "meteors",
+      "params": {}
+    },
+    {
+      "index": 36,
+      "pitch": 72,
+      "label": "Dust",
+      "event": "dust",
+      "params": {}
+    },
+    {
+      "index": 37,
+      "pitch": 73,
+      "label": "Flash",
+      "event": "flash",
+      "params": {}
+    },
+    {
+      "index": 38,
+      "pitch": 74,
+      "label": "Wipe",
+      "event": "wipe",
+      "params": {}
+    },
+    {
+      "index": 39,
+      "pitch": 75,
+      "label": "Shimmer",
+      "event": "shimmer",
+      "params": {}
+    }
+  ]
+}

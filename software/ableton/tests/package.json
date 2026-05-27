@@ -1,0 +1,16 @@
+{
+  "name": "here-m4l-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Jest tests for the HERE M4L device's here.js v8 logic.",
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  },
+  "jest": {
+    "testMatch": ["<rootDir>/*.test.js"],
+    "verbose": true
+  }
+}

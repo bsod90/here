@@ -3,15 +3,13 @@
 Exact port of software/simulator/public/js/demo.js, extended with
 4-phase timing: inhale → hold_top → exhale → hold_bottom.
 
-Uses numpy for vectorized computation (30fps on RPi 4).
+Vectorized with numpy for 30fps on RPi 4.
 """
+from __future__ import annotations
+
 import math
 
-try:
-    import numpy as np
-    HAS_NUMPY = True
-except ImportError:
-    HAS_NUMPY = False
+import numpy as np
 
 from grid import TOTAL, DISTANCES, GRID_POSITIONS, CENTER
 
@@ -51,13 +49,6 @@ def _breath_phase(time_ms: float, params: dict) -> float:
     return 0.0
 
 
-def render(frame: bytearray, time_ms: float, params: dict):
-    if HAS_NUMPY:
-        _render_numpy(frame, time_ms, params)
-    else:
-        _render_pure(frame, time_ms, params)
-
-
 # Pre-compute numpy arrays once
 _NP_DISTANCES = None
 _NP_ANGLES = None
@@ -74,7 +65,164 @@ def _get_np_arrays():
     return _NP_DISTANCES, _NP_ANGLES
 
 
-def _render_numpy(frame: bytearray, time_ms: float, params: dict):
+FADE_IN_S = 16.5
+FADE_OUT_S = 7.5
+
+# Heartbeat phase parameters. The first chunk of the fade-in is a slow
+# 60 bpm lub-dub pulse rather than a single growing breath — gives the
+# emergence a "waking up" feel and matches the user's mental model of
+# how the circle should appear.
+_HEART_FRAC      = 0.40         # first 40% of fade-in is the heartbeat
+_HEART_PERIOD_MS = 1000.0       # exactly 60 bpm
+_HEART_R_BASE    = 3.0          # rest radius (LEDs)
+_HEART_R_AMP     = 0.40         # peak excursion above rest — subtle
+_LUB_CENTER_MS   = 110.0
+_LUB_SIGMA_MS    = 55.0
+_DUB_CENTER_MS   = 360.0
+_DUB_SIGMA_MS    = 70.0
+_DUB_AMP         = 0.50
+
+
+def _heartbeat_envelope(time_ms: float) -> float:
+    """Two-peak ('lub-dub') Gaussian pulse within each 1 s window.
+    Returns 0..1; rest of the period is 0 (the long quiet between
+    beats)."""
+    t = time_ms % _HEART_PERIOD_MS
+    lub = math.exp(-((t - _LUB_CENTER_MS) ** 2)
+                   / (2.0 * _LUB_SIGMA_MS * _LUB_SIGMA_MS))
+    dub = _DUB_AMP * math.exp(
+        -((t - _DUB_CENTER_MS) ** 2)
+        / (2.0 * _DUB_SIGMA_MS * _DUB_SIGMA_MS))
+    return min(1.0, lub + dub)
+
+
+def _apply_fade(params: dict, fade_in: float | None,
+                fade_out: float | None, time_ms: float) -> dict:
+    """Mutate a copy of `params` to encode the fade-in / fade-out state.
+    Returns the modified dict (caller can then call render with it)."""
+    p = dict(params)
+    min_r = float(p.get("min_radius", 3.0))
+    max_r = float(p.get("max_radius", 17.0))
+    brightness = float(p.get("brightness", 1.0))
+
+    if fade_in is not None:
+        u = max(0.0, min(1.0, fade_in))
+        if u < _HEART_FRAC:
+            # Phase 1 — 60 bpm heartbeat. Setting min_radius == max_radius
+            # means the breathing renderer's breath_phase math has no
+            # range to lerp through, so the circle sits at whatever
+            # radius we pass; the actual motion comes from this
+            # heartbeat envelope, not from the breath cycle.
+            pulse = _heartbeat_envelope(time_ms)
+            r = _HEART_R_BASE + _HEART_R_AMP * pulse
+            p["min_radius"] = r
+            p["max_radius"] = r
+            uu = u / _HEART_FRAC
+            # Brightness ramps from 0 to ~85% across the heartbeat
+            # phase so the first beats are barely-there glimmers and
+            # the last beats are clearly visible.
+            p["brightness"] = brightness * 0.85 * (uu ** 1.2)
+        else:
+            # Phase 2 — the natural breath cycle takes over at the
+            # configured full radii. No "slow grow toward full" — that
+            # read as a reluctant half-expansion; the user wants the
+            # first real inhale to be a real inhale. We still ramp
+            # brightness up the last 15% so the heartbeat → breath
+            # handoff doesn't pop.
+            POST_HEART_BRIGHT_RAMP = 0.10
+            bramp = min(1.0, (u - _HEART_FRAC) / POST_HEART_BRIGHT_RAMP)
+            p["brightness"] = brightness * (0.85 + 0.15 * bramp)
+            # min_radius / max_radius are left at their configured
+            # values so the breath cycle plays full-amplitude.
+
+    if fade_out is not None:
+        # Smooth continuous shrink. CRITICAL: do NOT override the
+        # inhale/hold/exhale timings — those changes cause an instant
+        # phase jump because the breath cycle's modulo math depends on
+        # total_cycle. By leaving timing alone, the circle keeps
+        # breathing at the same tempo as we toggle the transition; only
+        # its scale tapers down. Brightness fades with a slightly
+        # slower curve so a small dim circle remains visible for a beat
+        # before disappearing entirely.
+        u = max(0.0, min(1.0, fade_out))
+        shrink = 1.0 - u
+        p["min_radius"] = min_r * shrink
+        p["max_radius"] = max_r * shrink
+        p["brightness"] = brightness * (shrink ** 0.6)
+    return p
+
+
+# ── Session phases ────────────────────────────────────────────
+# A "breathing session" walks through several sub-phases over time.
+# Each phase has a timing knob in config (breathing.session.*) and a
+# matching visual stub here. Today the engine only renders whichever
+# phase the user picks via `preview_phase` — full orchestration (auto
+# progression on a timer + audio cues) will land later.
+PHASES = ("auto", "fade_in", "intro_voice", "loop",
+          "outro_voice", "chill", "fade_out")
+
+# Chill (post-meditation): slightly slower than the fade-in heartbeat
+# and a bit more visible — 50 bpm, ~1.5 LED amplitude.
+_CHILL_PERIOD_MS = 1200.0       # 50 bpm
+_CHILL_R_BASE    = 4.0
+_CHILL_R_AMP     = 1.5
+_CHILL_LUB_CENTER_MS = 130.0
+_CHILL_LUB_SIGMA_MS  = 70.0
+_CHILL_DUB_CENTER_MS = 420.0
+_CHILL_DUB_SIGMA_MS  = 85.0
+_CHILL_DUB_AMP       = 0.50
+
+
+def _chill_envelope(time_ms: float) -> float:
+    t = time_ms % _CHILL_PERIOD_MS
+    lub = math.exp(-((t - _CHILL_LUB_CENTER_MS) ** 2)
+                   / (2.0 * _CHILL_LUB_SIGMA_MS * _CHILL_LUB_SIGMA_MS))
+    dub = _CHILL_DUB_AMP * math.exp(
+        -((t - _CHILL_DUB_CENTER_MS) ** 2)
+        / (2.0 * _CHILL_DUB_SIGMA_MS * _CHILL_DUB_SIGMA_MS))
+    return min(1.0, lub + dub)
+
+
+def _apply_chill(p: dict, time_ms: float) -> dict:
+    """Replace the breath cycle with a 50 bpm heartbeat for the chill
+    phase. Same min == max trick as fade-in's heartbeat so the
+    breath_phase math is bypassed."""
+    p = dict(p)
+    pulse = _chill_envelope(time_ms)
+    r = _CHILL_R_BASE + _CHILL_R_AMP * pulse
+    p["min_radius"] = r
+    p["max_radius"] = r
+    return p
+
+
+def _apply_voice_shimmer(p: dict, time_ms: float) -> dict:
+    """Subtle global brightness modulation — gives the room a faint
+    'speaking' presence during intro / outro audio prompts without
+    overpowering the voice. Two slow sines beating against each other
+    so the shimmer feels organic, not mechanical."""
+    p = dict(p)
+    t = time_ms / 1000.0
+    base = float(p.get("brightness", 1.0))
+    shimmer = (
+        0.04 * math.sin(t * 0.55)
+        + 0.025 * math.sin(t * 1.10 + 1.1)
+    )
+    p["brightness"] = base * (1.0 + shimmer)
+    return p
+
+
+def render(frame: bytearray, time_ms: float, params: dict,
+           *, fade_in: float | None = None, fade_out: float | None = None,
+           phase: str | None = None):
+    if fade_in is not None or fade_out is not None:
+        params = _apply_fade(params, fade_in, fade_out, time_ms)
+    # Session phase overrides — only honored outside of explicit
+    # fade-in/fade-out so the transitions still own the visual when
+    # they're in flight.
+    elif phase == "intro_voice" or phase == "outro_voice":
+        params = _apply_voice_shimmer(params, time_ms)
+    elif phase == "chill":
+        params = _apply_chill(params, time_ms)
     min_r = params["min_radius"]
     max_r = params["max_radius"]
     rim_w = params["rim_width"]
@@ -173,18 +321,18 @@ def _render_numpy(frame: bytearray, time_ms: float, params: dict):
                 velocity = abs(velocity)  # always spin same direction
 
             # Use module-level accumulator for smooth integration
-            if not hasattr(_render_numpy, '_yoyo_angle'):
-                _render_numpy._yoyo_angle = 0.0
-                _render_numpy._yoyo_vel = 0.0
+            if not hasattr(render, '_yoyo_angle'):
+                render._yoyo_angle = 0.0
+                render._yoyo_vel = 0.0
 
             # Blend toward target velocity with inertia (smoothing factor)
             inertia = spin.get("yoyo_inertia", 0.995)
-            _render_numpy._yoyo_vel = _render_numpy._yoyo_vel * inertia + velocity * (1 - inertia)
+            render._yoyo_vel = render._yoyo_vel * inertia + velocity * (1 - inertia)
 
             # Integrate
-            _render_numpy._yoyo_angle += _render_numpy._yoyo_vel * yoyo_speed * dt * 0.001
+            render._yoyo_angle += render._yoyo_vel * yoyo_speed * dt * 0.001
 
-            spin_angle = _render_numpy._yoyo_angle * math.pi * 2
+            spin_angle = render._yoyo_angle * math.pi * 2
         else:
             # Constant speed
             speed = spin.get("constant_speed", 0.3)
@@ -200,55 +348,3 @@ def _render_numpy(frame: bytearray, time_ms: float, params: dict):
 
     rgb = np.clip(rgb * brightness, 0, 255).astype(np.uint8)
     frame[:] = rgb.tobytes()
-
-
-def _render_pure(frame: bytearray, time_ms: float, params: dict):
-    min_r = params["min_radius"]
-    max_r = params["max_radius"]
-    rim_w = params["rim_width"]
-    inner_blur = params["inner_blur"]
-    outer_blur = params["outer_blur"]
-    palettes = params.get("palettes", [])
-    active = params.get("active_palette", 0)
-    pal = palettes[active % len(palettes)] if palettes else {}
-    rim_color = pal.get("rim_color", [120, 80, 255])
-    inner_color = pal.get("inner_color", [40, 220, 220])
-    outer_color = pal.get("outer_color", [200, 40, 180])
-    trail_color = pal.get("trail_color", [80, 50, 200])
-    trail_delay = params["trail_delay_ms"]
-    trail_blur = params["trail_blur"]
-    trail_opacity = params["trail_opacity"]
-    brightness = params["brightness"]
-
-    rim_denom = 2.0 * rim_w * rim_w
-    inner_denom = 2.0 * inner_blur * inner_blur
-    outer_denom = 2.0 * outer_blur * outer_blur
-    trail_denom = 2.0 * trail_blur * trail_blur
-
-    breath = _breath_phase(time_ms, params)
-    radius = min_r + breath * (max_r - min_r)
-
-    trail_breath = _breath_phase(time_ms - trail_delay, params)
-    trail_radius = min_r + trail_breath * (max_r - min_r)
-
-    for i in range(TOTAL):
-        dist = DISTANCES[i]
-        dfr = dist - radius
-        dft = dist - trail_radius
-
-        rim_glow = math.exp(-(dfr * dfr) / rim_denom)
-        inner_glow = math.exp(-(dfr * dfr) / inner_denom) if dfr < 0 else 0.0
-        outer_glow = math.exp(-(dfr * dfr) / outer_denom) if dfr > 0 else 0.0
-        trail_glow = math.exp(-(dft * dft) / trail_denom) * trail_opacity
-
-        r = (rim_glow * rim_color[0] + inner_glow * inner_color[0]
-             + outer_glow * outer_color[0] + trail_glow * trail_color[0])
-        g = (rim_glow * rim_color[1] + inner_glow * inner_color[1]
-             + outer_glow * outer_color[1] + trail_glow * trail_color[1])
-        b = (rim_glow * rim_color[2] + inner_glow * inner_color[2]
-             + outer_glow * outer_color[2] + trail_glow * trail_color[2])
-
-        off = i * 3
-        frame[off] = min(255, int(r * brightness))
-        frame[off + 1] = min(255, int(g * brightness))
-        frame[off + 2] = min(255, int(b * brightness))

@@ -76,6 +76,121 @@ b { font-weight: 600; color: var(--fg); }
 }
 .status-strip b { color: var(--fg); }
 
+/* Scale pill in the topbar — flips color when bench is occupied
+   (driven by the .occupied class added in admin.js). */
+.scale-pill {
+  padding: 0 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-card);
+}
+.scale-pill.occupied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.scale-pill.no-hw {
+  color: var(--fg-dim2);
+  font-style: italic;
+}
+
+/* Scale auto-engage + weight-overlay toggles (Run tab). */
+.scale-auto-btn.active,
+.scale-overlay-btn.active {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ────────────────────────────────────────────────────────────
+   Telemetry history charts (Telemetry tab)
+   ──────────────────────────────────────────────────────────── */
+.th-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.th-range-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.th-totals {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+.th-totals b {
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.th-clock-warn {
+  margin-left: auto;
+  color: var(--warn);
+  font-size: 12px;
+}
+.th-mode-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.th-mode-chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-card);
+  color: var(--fg-dim);
+  cursor: pointer;
+  transition: opacity .12s;
+  user-select: none;
+}
+.th-mode-chip.active {
+  color: var(--fg);
+  border-color: currentColor;
+}
+.th-mode-chip.muted {
+  opacity: 0.35;
+}
+.th-charts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.th-chart {
+  background: var(--bg-card);
+  border-radius: 6px;
+  padding: 6px 8px 4px;
+  border: 1px solid var(--line);
+}
+.th-chart-label {
+  font-size: 10.5px;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  margin-bottom: 2px;
+}
+.th-svg {
+  display: block;
+  width: 100%;
+  height: 110px;
+}
+.th-xaxis {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 8px 6px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.th-empty-msg {
+  font-size: 11px;
+  fill: var(--fg-dim);
+}
+
 /* ────────────────────────────────────────────────────────────
    Tabs — sticky, large tap targets
    ──────────────────────────────────────────────────────────── */
@@ -86,9 +201,14 @@ b { font-weight: 600; color: var(--fg); }
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--line);
+  /* Allow tabs to scroll horizontally on narrow screens so labels
+     aren't truncated. Scrollbar is hidden for cleanliness. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
-  flex: 1;
+  flex: 1 0 auto;
   min-height: var(--tap);
   background: none;
   border: none;
@@ -98,7 +218,8 @@ b { font-weight: 600; color: var(--fg); }
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  padding: 0 8px;
+  padding: 0 14px;
+  white-space: nowrap;
   transition: color .15s, border-color .15s;
 }
 .tab:hover { color: var(--fg); }
@@ -255,7 +376,7 @@ button {
   min-height: 32px;
 }
 .param-row .val {
-  flex: 0 0 60px;
+  flex: 0 0 50px;
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
@@ -277,6 +398,129 @@ button {
   margin: 6px 0 10px;
 }
 .row-line label.dim { flex: 0 0 80px; }
+
+/* Scene tab — trigger events: two-column grid */
+#scene-events {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+}
+@media (max-width: 720px) {
+  #scene-events { grid-template-columns: 1fr; }
+}
+
+/* Scene tab — VST-style round knob (replaces duration dropdowns) */
+.knob {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  user-select: none;
+  cursor: ns-resize;
+}
+.knob svg {
+  width: 40px;
+  height: 40px;
+  touch-action: none;
+}
+.knob-track { fill: var(--bg-card2); stroke: var(--line-2); stroke-width: 1.5; }
+.knob-fill  { stroke: var(--accent); stroke-width: 3; fill: none; stroke-linecap: round; }
+.knob-pointer { stroke: var(--fg); stroke-width: 2; stroke-linecap: round; }
+.knob-label {
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg);
+  min-width: 36px;
+  text-align: center;
+}
+
+/* Piano roll */
+.piano-roll-wrap {
+  background: var(--bg-card2);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  overflow-x: auto;
+  margin-top: 8px;
+}
+.piano-roll-wrap canvas {
+  display: block;
+  /* allow scrolling on small screens — canvas width is set in JS */
+}
+
+/* Scene tab — beat indicator + event button rows */
+.beat-pulse {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--fg-dim2);
+  transition: background 80ms linear, transform 80ms ease-out;
+}
+.beat-pulse.on {
+  background: var(--accent);
+  transform: scale(1.5);
+}
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.event-row button.event-fire {
+  flex: 0 0 150px;
+  padding: 8px 10px;
+  background: var(--bg-card2);
+  border: 1px solid var(--line-2);
+  color: var(--fg);
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.event-row button.event-fire:hover { background: var(--accent-bg); border-color: var(--accent); }
+.event-row button.event-fire:active { transform: translateY(1px); }
+.event-row .dim { flex: 0 0 50px; }
+.event-row select {
+  background: var(--bg-card2);
+  border: 1px solid var(--line-2);
+  color: var(--fg);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+/* Music tab — live band meters */
+.band-bars { display: flex; flex-direction: column; gap: 6px; }
+.band-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.band-bar label {
+  flex: 0 0 50px;
+  font-size: 13px;
+  color: var(--fg-dim);
+}
+.band-bar .meter {
+  flex: 1 1 auto;
+  height: 12px;
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.band-bar .meter .fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--bad));
+  transition: width 60ms linear;
+}
+.band-bar span {
+  flex: 0 0 50px;
+  text-align: right;
+  font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--fg);
+}
 
 /* Palette buttons */
 .palette-btn {
@@ -437,6 +681,518 @@ button {
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+/* ────────────────────────────────────────────────────────────
+   Themed scrollbars — match the dark UI
+   ──────────────────────────────────────────────────────────── */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-2) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+}
+*::-webkit-scrollbar-track {
+  background: var(--bg-card);
+  border-radius: 6px;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+  border-radius: 6px;
+  border: 2px solid var(--bg-card);
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-dim2);
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--accent);
+}
+*::-webkit-scrollbar-corner {
+  background: var(--bg-card);
+}
+
+/* ────────────────────────────────────────────────────────────
+   MIDI tab — Ableton-style compact density
+   ──────────────────────────────────────────────────────────── */
+.tiny       { font-size: 11px; }
+.tiny-btn {
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 3px 7px;
+  font: inherit;
+  font-size: 12px;
+  border-radius: 3px;
+  cursor: pointer;
+  min-width: 0;
+  white-space: nowrap;
+}
+.tiny-btn:hover { background: var(--bg-card); border-color: var(--line-2); }
+.tiny-btn:active { background: var(--accent-bg); color: var(--accent); }
+.tiny-btn.play-btn { color: var(--ok); }
+.tiny-num, .tiny-sel {
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 3px;
+}
+.tiny-num { width: 56px; text-align: right; }
+.tiny-num.bpm-num { width: 60px; }
+.tiny-sel { padding-right: 18px; }
+
+.ableton-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 6px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 6px 0 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+.bar-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.bar-group .tiny-sel { max-width: 180px; }
+.bar-group .dim.tiny { margin-left: 2px; }
+.bar-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 2px 4px;
+}
+
+.sequencer-block {
+  margin-top: 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+.sequencer-block .piano-roll-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 520px) {
+  .bar-group .tiny-sel { max-width: 120px; }
+  .tiny-btn { padding: 3px 6px; font-size: 11px; }
+}
+
+.synth-row {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr 1.3fr;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.synth-col {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+  min-width: 0;
+}
+.synth-col h4 {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--fg-dim);
+  margin-bottom: 6px;
+}
+
+.oval-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  min-width: 0;
+}
+.oval-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  background: var(--bg-card2);
+  border-radius: 3px;
+  min-width: 0;
+  overflow: hidden;
+}
+.oval-cell .oval-title {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--fg-dim);
+}
+.oval-cell .oval-toggle {
+  padding: 2px 6px;
+  font-size: 10px;
+  min-width: 28px;
+}
+.oval-cell .oval-toggle.on {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+/* Stack the knob trio vertically inside the narrow oval cell so they
+   never overflow the column on wide layouts. */
+.oval-cell .knob-trio {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: center;
+}
+
+.sequencer-block h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--fg-dim);
+  margin: 0 0 6px;
+}
+
+.compact-sliders .param-row {
+  margin-bottom: 4px;
+}
+.compact-sliders label {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.compact-sliders input[type=range] {
+  height: 16px;
+}
+.compact-sliders .param-row-value {
+  font-size: 11px;
+}
+
+#scene-palette-selector .palette-btn { height: 26px !important; border-width: 1px !important; min-width: 60px; }
+#scene-palette-selector div[style*="gap:8px"] { gap: 4px !important; flex-wrap: wrap !important; }
+
+/* Knob cell — small, label below */
+.knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.knob-cell .knob-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-dim);
+}
+.knob-cell .knob-value {
+  font-size: 10px;
+  color: var(--fg);
+  font-family: monospace;
+}
+
+/* Curves tab */
+.curve-card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.curve-card .curve-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.curve-card .curve-name {
+  font-weight: 600;
+  font-size: 12px;
+  flex: 1;
+}
+.curve-card .curve-canvas {
+  width: 100%;
+  height: 110px;
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  background: var(--bg);
+}
+
+/* Events column — one flex row per event. Name takes available width,
+   length dropdown is fixed when shown, trigger is a small button. */
+.event-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+  min-width: 0;
+}
+.event-row .event-name {
+  flex: 1 1 auto;
+  font-size: 11px;
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-row .event-len,
+.event-row .event-ease {
+  flex: 0 0 auto;
+  width: 72px;
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.event-row .event-ease { width: 78px; }
+.event-row .event-color {
+  flex: 0 0 auto;
+  width: 58px;
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+/* Per-oval color slot picker inside an oval-cell (narrower than the
+   event-row variant since the cell is ~110px wide). */
+.oval-cell .oval-color {
+  width: 56px;
+  margin: 2px auto 0;
+  display: block;
+}
+.event-row .event-extra {
+  flex: 0 0 auto;
+  width: 48px;
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 2px 4px;
+  border-radius: 3px;
+  font-size: 11px;
+  text-align: right;
+}
+.event-row .event-trigger {
+  flex: 0 0 auto;
+  background: var(--bg-card2);
+  border: 1px solid var(--line);
+  color: var(--fg);
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.event-row .event-trigger:active {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+/* Narrow screens — let event-row wrap so the trigger button is never
+   pushed off-screen, and shrink the per-control widths. */
+@media (max-width: 520px) {
+  .event-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .event-row .event-name {
+    flex: 1 1 100%;        /* name on its own line */
+    font-size: 12px;
+  }
+  .event-row .event-len,
+  .event-row .event-ease,
+  .event-row .event-color,
+  .event-row .event-extra { flex: 1 1 40px; min-width: 0; width: auto; }
+  .event-row .event-trigger {
+    flex: 0 0 36px;
+    min-width: 36px;
+    padding: 4px 0;
+    text-align: center;
+  }
+}
+
+/* Physics tab — knob grid */
+.physics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  justify-items: center;
+}
+@media (max-width: 820px) {
+  .synth-row { grid-template-columns: 1fr 1fr; }
+  .synth-col-events { grid-column: 1 / -1; }
+}
+@media (max-width: 520px) {
+  .synth-row { grid-template-columns: 1fr; }
+  /* Keep ovals as 3 side-by-side columns even on narrow screens —
+     each row stays compact rather than wasting vertical space. */
+  .oval-row { grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .oval-cell { padding: 4px 2px; }
+  .physics-grid { grid-template-columns: repeat(2, 1fr); }
+
+  /* Param-row tightening: label stacks above the slider/value so the
+     slider gets the full row width and the value stays right-aligned. */
+  .param-row { flex-wrap: wrap; gap: 4px 8px; }
+  .param-row label { flex: 1 1 100%; font-size: 12px; }
+  .param-row input[type=range] { flex: 1 1 auto; min-width: 0; }
+  .param-row .val { flex: 0 0 44px; font-size: 12px; }
+}
+
+/* ────────────────────────────────────────────────────────────
+   Sub-tab tabs (top of MIDI pane) — keep these compact
+   ──────────────────────────────────────────────────────────── */
+.subtabs {
+  display: flex;
+  gap: 4px;
+  margin: 8px 0 14px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.subtabs::-webkit-scrollbar { display: none; }
+.subtab {
+  background: transparent;
+  color: var(--fg-dim);
+  border: none;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 4px 4px 0 0;
+  white-space: nowrap;
+  position: relative;
+  bottom: -1px;
+}
+.subtab:hover { color: var(--fg); }
+.subtab.active {
+  color: var(--accent);
+  border-bottom: 2px solid var(--accent);
+}
+.subpane { display: none; }
+.subpane.active { display: block; }
+.subpane h3 {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--fg-dim);
+  margin: 16px 0 6px;
+}
+.subpane h3:first-child { margin-top: 0; }
+
+.oval-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.oval-col {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+}
+.oval-col h4 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1.1px;
+  color: var(--fg-dim);
+  margin-bottom: 8px;
+  text-align: center;
+}
+.oval-knobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+}
+.knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.knob-cell .knob-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--fg-dim);
+}
+.knob-cell .knob-value {
+  font-size: 11px;
+  color: var(--fg);
+  font-family: monospace;
+}
+
+.curve-card {
+  background: var(--bg-card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.curve-card .curve-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.curve-card .curve-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.curve-card .curve-canvas {
+  width: 100%;
+  height: 140px;
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.event-table {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 0.7fr 0.6fr;
+  gap: 8px 12px;
+  align-items: center;
+}
+.event-table .event-name {
+  font-weight: 600;
+  font-size: 13px;
+}
+.event-table button.mode-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+.event-table select, .event-table input[type=number] {
+  background: var(--bg-card2);
+  border: 1px solid var(--line-2);
+  color: var(--fg);
+  padding: 4px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.physics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  justify-items: center;
+}
+@media (max-width: 520px) {
+  .oval-grid { grid-template-columns: 1fr; }
+  .physics-grid { grid-template-columns: repeat(2, 1fr); }
+  .event-table { grid-template-columns: 1.4fr 1fr 0.7fr; }
+  .event-table .event-trigger { grid-column: 1 / -1; }
 }
 
 /* ────────────────────────────────────────────────────────────

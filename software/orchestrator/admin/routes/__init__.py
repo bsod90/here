@@ -1,64 +1,48 @@
-"""FastAPI admin panel routes."""
+"""FastAPI admin panel — composition root.
+
+Each domain (scene/MIDI, scale, telemetry, AP) lives in its own
+submodule; this file wires them into the FastAPI app and keeps the
+small mode/status/targets/transport/osc/logs endpoints inline.
+
+Architectural notes:
+  * `create_app` is a thin closure. Business logic lives in the owning
+    services (Scene, ScaleSensor, TelemetryHistory…), not here.
+  * Submodules each expose `register(app, *services)` and return None.
+    They never share state with each other through this file.
+"""
+from __future__ import annotations
+
 import asyncio
 import logging
-import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
+
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
-from starlette.responses import Response
+
 from config import get_defaults
+from animation_engine import MODE_REGISTRY
 
-AP_CON = "here-debug-ap"
+from ._shared import LogHandler, get_logs, safe_json, NoCacheStaticFiles
+from . import scene as scene_routes
+from . import scale as scale_routes
+from . import telemetry as telemetry_routes
+from . import ap as ap_routes
 
+# Re-export so existing `from admin.routes import create_app, LogHandler`
+# import paths keep working without any caller edits.
+__all__ = ["create_app", "LogHandler"]
 
-class NoCacheStaticFiles(StaticFiles):
-    """Serve static files with Cache-Control: no-cache so deploys take
-    effect on the next refresh without manual hard-reloads. The
-    simulator UI is small, so the revalidation cost is negligible."""
-
-    async def get_response(self, path, scope):
-        response: Response = await super().get_response(path, scope)
-        response.headers["Cache-Control"] = "no-cache, must-revalidate"
-        return response
-
-
-def _ap_state() -> dict:
-    """Return AP profile presence + activation state."""
-    try:
-        out = subprocess.check_output(
-            ["nmcli", "-t", "-f", "NAME,DEVICE,STATE", "con", "show"],
-            timeout=2,
-        ).decode()
-    except Exception:
-        return {"defined": False, "active": False}
-    defined = False
-    active = False
-    for line in out.splitlines():
-        parts = line.split(":")
-        if parts and parts[0] == AP_CON:
-            defined = True
-            if len(parts) >= 3 and parts[2] == "activated":
-                active = True
-    return {"defined": defined, "active": active}
 
 logger = logging.getLogger(__name__)
 
-# Ring buffer for log capture
-_log_buffer: list[str] = []
-_MAX_LOGS = 200
 
+def create_app(config, engine, transport, telemetry=None, sim_bus=None,
+               osc_state=None, scene=None, sequence_store=None,
+               patch_store=None, tap_tracker=None, scale=None,
+               telemetry_history=None) -> FastAPI:
 
-class LogHandler(logging.Handler):
-    def emit(self, record):
-        msg = self.format(record)
-        _log_buffer.append(msg)
-        if len(_log_buffer) > _MAX_LOGS:
-            _log_buffer.pop(0)
-
-
-def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Hand the running asyncio loop to the simulator bus so the
@@ -69,7 +53,7 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
 
     app = FastAPI(title="HERE Admin", lifespan=lifespan)
 
-    static_dir = Path(__file__).parent / "static"
+    static_dir = Path(__file__).resolve().parent.parent / "static"
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     # ── Simulator WebSocket — must be registered BEFORE the /sim mount
@@ -82,8 +66,6 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
             return
         await sim_bus.register(ws)
         try:
-            # The simulator client doesn't send anything; we just hold
-            # the socket open and serve frames from the broadcaster.
             while True:
                 await ws.receive_text()
         except WebSocketDisconnect:
@@ -93,12 +75,11 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
         finally:
             await sim_bus.unregister(ws)
 
-    # ── Simulator static UI — mounted at /sim/, populated by install.sh
-    # from software/simulator/public/.
+    # Simulator static UI — populated by install.sh from software/simulator/public/.
     sim_dir = Path("/opt/here/sim")
     if not sim_dir.exists():
         # local dev: try the repo path relative to this file
-        sim_dir = Path(__file__).resolve().parents[3] / "simulator" / "public"
+        sim_dir = Path(__file__).resolve().parents[4] / "simulator" / "public"
     if sim_dir.exists():
         app.mount("/sim", NoCacheStaticFiles(directory=str(sim_dir), html=True), name="sim")
         logger.info(f"Simulator UI mounted at /sim/ from {sim_dir}")
@@ -109,19 +90,25 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
     async def index():
         return (static_dir / "index.html").read_text()
 
-    # ── Config ──────────────────────────────────────────────
+    # ── Domain submodules ──────────────────────────────────────
+    scene_routes.register(app, config, engine, scene, sequence_store,
+                          patch_store, tap_tracker)
+    scale_routes.register(app, scale)
+    telemetry_routes.register(app, telemetry, telemetry_history)
+    ap_routes.register(app)
+
+    # ── Inline: config / defaults ──────────────────────────────
     @app.get("/api/config")
     async def get_config():
         return config.get_all()
 
     @app.put("/api/config")
     async def update_config(request: Request):
-        data = await request.json()
+        data = await safe_json(request)
         for key, value in data.items():
             config.set(key, value)
         return {"ok": True}
 
-    # ── Defaults ────────────────────────────────────────────
     @app.get("/api/defaults")
     async def get_default_config():
         return get_defaults()
@@ -142,17 +129,30 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
             return JSONResponse({"error": "unknown section"}, status_code=400)
         return config.get_all()
 
-    # ── Mode ────────────────────────────────────────────────
+    # ── Inline: mode ───────────────────────────────────────────
     @app.post("/api/mode/{mode}")
     async def set_mode(mode: str):
-        if mode not in ("breathing", "standby", "debug", "off"):
+        if mode not in MODE_REGISTRY:
             return JSONResponse({"error": "invalid mode"}, status_code=400)
+        prev = engine.mode
         config.set("mode", mode)
         engine.mode = mode
         logger.info(f"Mode changed to: {mode}")
+        # Entering MIDI mode auto-plays the sequencer unless the user
+        # has turned autoplay off (e.g. when driving the engine from
+        # Ableton OSC — orchestrator becomes a pure renderer).
+        if mode == "midi" and prev != "midi" and scene is not None:
+            scn_cfg = config.get("scene") or {}
+            seq_cfg = scn_cfg.get("sequencer") or {}
+            autoplay = bool(seq_cfg.get("autoplay", True))
+            if autoplay and not scene.sequencer.playing:
+                scene.sequencer.play(clock=scene.clock, dispatcher=scene.router)
+                logger.info("MIDI mode auto-play started")
+            elif not autoplay:
+                logger.info("MIDI mode auto-play disabled — sequencer left stopped")
         return {"mode": mode}
 
-    # ── Sensor simulation ───────────────────────────────────
+    # ── Inline: sensor simulation ──────────────────────────────
     @app.post("/api/sensor/{state}")
     async def simulate_sensor(state: str):
         if state == "occupied":
@@ -167,7 +167,7 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
             return JSONResponse({"error": "invalid state"}, status_code=400)
         return {"sensor": state, "mode": engine.mode}
 
-    # ── Status ──────────────────────────────────────────────
+    # ── Inline: status ─────────────────────────────────────────
     @app.get("/api/status")
     async def get_status():
         return {
@@ -177,14 +177,14 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
             "power": engine.power_estimate,
         }
 
-    # ── Targets ─────────────────────────────────────────────
+    # ── Inline: targets (WLED endpoints) ───────────────────────
     @app.get("/api/targets")
     async def get_targets():
         return transport.get_targets()
 
     @app.post("/api/targets")
     async def add_target(request: Request):
-        data = await request.json()
+        data = await safe_json(request)
         targets = config.get("targets") or []
         targets.append({
             "name": data.get("name", "New Target"),
@@ -199,7 +199,7 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
 
     @app.put("/api/targets/{idx}")
     async def update_target(idx: int, request: Request):
-        data = await request.json()
+        data = await safe_json(request)
         targets = config.get("targets") or []
         if idx < 0 or idx >= len(targets):
             return JSONResponse({"error": "invalid index"}, status_code=404)
@@ -220,79 +220,48 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None) -> FastA
         logger.info(f"Target removed: {removed['name']}")
         return {"ok": True, "targets": transport.get_targets()}
 
-    # ── Transport settings ───────────────────────────────────
+    # ── Inline: transport settings ─────────────────────────────
     @app.get("/api/transport")
     async def get_transport():
         return config.get("transport")
 
     @app.put("/api/transport")
     async def update_transport(request: Request):
-        data = await request.json()
+        data = await safe_json(request)
         config.set("transport", data)
         logger.info(f"Transport updated: {data}")
         return config.get("transport")
 
-    # ── Logs ────────────────────────────────────────────────
+    # ── Inline: logs (in-memory ring) ──────────────────────────
     @app.get("/api/logs")
-    async def get_logs():
-        return {"logs": _log_buffer[-100:]}
+    async def get_logs_endpoint():
+        return {"logs": get_logs(100)}
 
-    # ── Telemetry ───────────────────────────────────────────
-    @app.get("/api/telemetry")
-    async def get_telemetry():
-        if telemetry is None:
+    # ── Inline: OSC test injection (manual band/trigger drive) ─
+    @app.get("/api/osc/state")
+    async def osc_snapshot():
+        if osc_state is None:
             return {}
-        return telemetry.snapshot()
+        # Snapshot at the engine's current frame clock so the envelope
+        # state is read at the same instant the renderer would see it.
+        return osc_state.snapshot(engine.time_ms())
 
-    @app.get("/api/telemetry/temp-history")
-    async def get_temp_history():
-        if telemetry is None:
-            return {"samples": []}
-        return {"samples": telemetry.temp_history()}
+    @app.post("/api/osc/band/{name}")
+    async def osc_test_band(name: str, request: Request):
+        if osc_state is None:
+            return JSONResponse({"error": "osc disabled"}, status_code=503)
+        if name not in ("low", "mid", "high"):
+            return JSONResponse({"error": "invalid band"}, status_code=400)
+        body = await safe_json(request)
+        osc_state.set_band(name, float(body.get("value", 0.0)))
+        return {"ok": True}
 
-    # ── Field-debug AP toggle ───────────────────────────────
-    # The AP and the home WiFi STA can't safely run on the same wlan0
-    # vif at the same time, so the AP profile is dormant by default.
-    # Activating it WILL drop the home WiFi connection — that's the
-    # whole point in the field. The dashboard shows a confirmation.
-    @app.get("/api/ap")
-    async def ap_status():
-        return _ap_state()
-
-    @app.post("/api/ap/up")
-    async def ap_up():
-        try:
-            subprocess.run(
-                ["nmcli", "con", "up", AP_CON],
-                check=True, timeout=10,
-                capture_output=True,
-            )
-            logger.warning("Field-debug AP brought up — home WiFi will drop")
-            return _ap_state()
-        except subprocess.CalledProcessError as e:
-            return JSONResponse(
-                {"error": "nmcli failed", "stderr": e.stderr.decode(errors="ignore")},
-                status_code=500,
-            )
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    @app.post("/api/ap/down")
-    async def ap_down():
-        try:
-            subprocess.run(
-                ["nmcli", "con", "down", AP_CON],
-                check=True, timeout=10,
-                capture_output=True,
-            )
-            logger.info("Field-debug AP taken down")
-            return _ap_state()
-        except subprocess.CalledProcessError as e:
-            return JSONResponse(
-                {"error": "nmcli failed", "stderr": e.stderr.decode(errors="ignore")},
-                status_code=500,
-            )
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
+    @app.post("/api/osc/trigger/{name}")
+    async def osc_test_trigger(name: str, request: Request):
+        if osc_state is None:
+            return JSONResponse({"error": "osc disabled"}, status_code=503)
+        body = await safe_json(request)
+        osc_state.fire_trigger(name, velocity=float(body.get("velocity", 1.0)), t_ms=engine.time_ms())
+        return {"ok": True}
 
     return app

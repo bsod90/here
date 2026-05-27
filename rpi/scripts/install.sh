@@ -30,6 +30,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     python3-venv python3-pip rsync \
     avahi-daemon ffmpeg alsa-utils \
+    swig python3-dev liblgpio-dev \
     >/dev/null
 
 # ---------------------------------------------------------------------
@@ -73,6 +74,14 @@ if ! cmp -s "$WATCHDOG_SRC" "$WATCHDOG_DST" 2>/dev/null; then
     # full reboot.
     systemctl daemon-reexec
 fi
+
+# ---------------------------------------------------------------------
+# 3.5 NTP — telemetry history records timestamps; if the Pi boots with a
+#     wrong clock the charts will be misplaced on the timeline. Bookworm
+#     ships systemd-timesyncd disabled by default on some images.
+# ---------------------------------------------------------------------
+systemctl enable --now systemd-timesyncd 2>/dev/null || true
+timedatectl set-ntp true 2>/dev/null || true
 
 # ---------------------------------------------------------------------
 # 4. Journald rotation
@@ -146,8 +155,14 @@ fi
 # 7. Application — sync code → /opt/here, owned by `here`
 # ---------------------------------------------------------------------
 echo "→ syncing source → $APP"
-mkdir -p "$APP" "$APP/sim"
-rsync -a --delete --exclude '.venv' --exclude 'sim' --exclude '__pycache__' --exclude '*.pyc' \
+mkdir -p "$APP" "$APP/sim" "$APP/data/sequences"
+# Survive across deploys:
+#   * config.json — user's saved settings (mode, BPM, palettes, slider tweaks,
+#     active_sequence pointer). Never in git, must not be deleted by rsync.
+#   * data/      — saved piano-roll loops in data/sequences/*.json.
+rsync -a --delete --exclude '.venv' --exclude 'sim' --exclude 'data' \
+    --exclude 'config.json' \
+    --exclude '__pycache__' --exclude '*.pyc' \
     "$STAGE/orchestrator/" "$APP/"
 # Simulator UI lives at /opt/here/sim, mounted by the orchestrator at /sim/.
 if [ -d "$STAGE/simulator" ]; then

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0a0a0e">
   <title>HERE — Admin</title>
-  <link rel="stylesheet" href="/static/admin.css?v=14">
+  <link rel="stylesheet" href="/static/admin.css?v=60">
 </head>
 <body>
   <header class="topbar">
@@ -15,6 +15,7 @@
       <span><span id="s-fps">—</span> fps</span>
       <span id="s-uptime">—</span>
       <span><span id="s-temp">—</span>°C</span>
+      <span id="s-scale" class="scale-pill" hidden>⚖ <b id="s-scale-val">—</b> kg</span>
       <span class="t-pill" id="s-throttle" hidden></span>
     </div>
   </header>
@@ -22,6 +23,7 @@
   <nav class="tabs" role="tablist">
     <button class="tab active" data-tab="run">Run</button>
     <button class="tab" data-tab="tune">Tune</button>
+    <button class="tab" data-tab="scene">MIDI</button>
     <button class="tab" data-tab="sim">Simulator</button>
     <button class="tab" data-tab="telemetry">Telemetry</button>
     <button class="tab" data-tab="logs">Logs</button>
@@ -34,6 +36,8 @@
       <div class="mode-buttons">
         <button class="mode-btn" data-mode="breathing">Breathing</button>
         <button class="mode-btn" data-mode="standby">Standby</button>
+        <button class="mode-btn" data-mode="midi">MIDI</button>
+        <button class="mode-btn" data-mode="fireplace">Fireplace</button>
         <button class="mode-btn" data-mode="debug">Debug</button>
         <button class="mode-btn" data-mode="off">Off</button>
       </div>
@@ -42,6 +46,61 @@
       <div class="sensor-buttons">
         <button class="sensor-btn" onclick="sensor('occupied')">Bench Occupied</button>
         <button class="sensor-btn" onclick="sensor('empty')">Bench Empty</button>
+      </div>
+
+      <h2>Bench Scale</h2>
+      <div class="param-group" id="scale-card">
+        <div class="kv-row">
+          <span>State</span>
+          <span><b id="sc-state">—</b> <span class="dim" id="sc-state-sub"></span></span>
+        </div>
+        <div class="kv-row">
+          <span>Total</span>
+          <span><b id="sc-total">—</b> kg</span>
+        </div>
+        <div class="kv-row">
+          <span>Leg 1 / Leg 2</span>
+          <span><b id="sc-leg1">—</b> / <b id="sc-leg2">—</b> kg</span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Auto-engage</label>
+          <button class="mode-btn scale-auto-btn" data-val="true">On</button>
+          <button class="mode-btn scale-auto-btn" data-val="false">Off</button>
+        </div>
+        <div class="row-line">
+          <label class="dim">Weight overlay</label>
+          <button class="mode-btn scale-overlay-btn" data-val="true">On</button>
+          <button class="mode-btn scale-overlay-btn" data-val="false">Off</button>
+        </div>
+        <div class="row-line">
+          <label class="dim">Threshold</label>
+          <input type="number" id="sc-threshold" class="tiny-num" min="0" step="0.5"> kg
+          <span class="dim tiny">switches to occupied above this</span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Release</label>
+          <input type="number" id="sc-release" class="tiny-num" min="1" step="5"> s
+          <span class="dim tiny">below threshold for this long → idle</span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Occupied →</label>
+          <select id="sc-occ-mode" class="tiny-sel">
+            <option value="breathing">Breathing</option>
+            <option value="midi">MIDI</option>
+            <option value="fireplace">Fireplace</option>
+            <option value="debug">Debug</option>
+          </select>
+          <label class="dim">Idle →</label>
+          <select id="sc-idle-mode" class="tiny-sel">
+            <option value="standby">Standby</option>
+            <option value="off">Off</option>
+            <option value="breathing">Breathing</option>
+          </select>
+        </div>
+        <div class="row-line">
+          <button class="mode-btn" id="sc-tare-btn">Tare (zero)</button>
+          <button class="mode-btn" id="sc-calib-btn">Calibrate…</button>
+        </div>
       </div>
 
       <h2>Targets</h2>
@@ -59,40 +118,200 @@
 
     <!-- ============================================================ -->
     <section id="tab-tune" class="pane">
-      <h2>Transport</h2>
-      <div class="param-group">
-        <div id="transport-params"></div>
+      <nav class="subtabs" role="tablist">
+        <button class="subtab active" data-subtab="general">General</button>
+        <button class="subtab" data-subtab="breathing">Breathing</button>
+        <button class="subtab" data-subtab="standby">Standby</button>
+        <button class="subtab" data-subtab="fireplace">Fireplace</button>
+        <button class="subtab" data-subtab="weight">Weight</button>
+      </nav>
+
+      <!-- General — engine-wide controls + palette ------------ -->
+      <div class="subpane active" data-pane="general">
+        <h2>Palette</h2>
+        <div id="palette-selector" class="param-group"></div>
+        <div id="palette-editor" class="param-group" style="margin-top:6px;"></div>
       </div>
 
-      <h2>Breathing Parameters</h2>
-      <div class="param-group" id="breathing-params"></div>
+      <!-- Breathing — params, session, spin ------------------- -->
+      <div class="subpane" data-pane="breathing">
+        <h2>Session phases</h2>
+        <div class="param-group">
+          <div class="row-line">
+            <label class="dim">Preview phase</label>
+            <select id="breathing-preview-phase" class="tiny-sel">
+              <option value="auto">Auto (loop)</option>
+              <option value="intro_voice">Intro voice</option>
+              <option value="outro_voice">Outro voice</option>
+              <option value="chill">Chill (50 bpm)</option>
+            </select>
+            <span class="dim tiny">forces a specific phase render — set to Auto for normal playback</span>
+          </div>
+          <div id="breathing-session-params"></div>
+        </div>
 
-      <h2>Spin Effect</h2>
-      <div class="param-group">
-        <div class="row-line">
-          <label class="dim">Spin</label>
-          <button class="mode-btn spin-toggle" data-val="false">Off</button>
-          <button class="mode-btn spin-toggle" data-val="true">On</button>
+        <h2>Breathing Parameters</h2>
+        <div class="param-group" id="breathing-params"></div>
+
+        <h2>Spin Effect</h2>
+        <div class="param-group">
+          <div class="row-line">
+            <label class="dim">Spin</label>
+            <button class="mode-btn spin-toggle" data-val="false">Off</button>
+            <button class="mode-btn spin-toggle" data-val="true">On</button>
+          </div>
+          <div class="row-line">
+            <label class="dim">Mode</label>
+            <button class="mode-btn spin-mode-btn" data-val="constant">Constant</button>
+            <button class="mode-btn spin-mode-btn" data-val="yoyo">Yo-Yo</button>
+          </div>
+          <div class="row-line">
+            <label class="dim">Direction</label>
+            <button class="mode-btn spin-dir-btn" data-val="true">Reverse</button>
+            <button class="mode-btn spin-dir-btn" data-val="false">Same</button>
+          </div>
+          <div id="spin-params"></div>
         </div>
-        <div class="row-line">
-          <label class="dim">Mode</label>
-          <button class="mode-btn spin-mode-btn" data-val="constant">Constant</button>
-          <button class="mode-btn spin-mode-btn" data-val="yoyo">Yo-Yo</button>
-        </div>
-        <div class="row-line">
-          <label class="dim">Direction</label>
-          <button class="mode-btn spin-dir-btn" data-val="true">Reverse</button>
-          <button class="mode-btn spin-dir-btn" data-val="false">Same</button>
-        </div>
-        <div id="spin-params"></div>
       </div>
 
-      <h2>Palette</h2>
-      <div id="palette-selector" class="param-group"></div>
-      <div id="palette-editor" class="param-group" style="margin-top:6px;"></div>
+      <!-- Standby --------------------------------------------- -->
+      <div class="subpane" data-pane="standby">
+        <h2>Standby Parameters</h2>
+        <div class="param-group" id="standby-params"></div>
+      </div>
 
-      <h2>Standby Parameters</h2>
-      <div class="param-group" id="standby-params"></div>
+      <!-- Fireplace ------------------------------------------- -->
+      <div class="subpane" data-pane="fireplace">
+        <h2>Fireplace Parameters</h2>
+        <div class="param-group" id="fireplace-params"></div>
+      </div>
+
+      <!-- Weight ---------------------------------------------- -->
+      <div class="subpane" data-pane="weight">
+        <h2>Weight Overlay</h2>
+        <div class="param-group">
+          <div class="row-line">
+            <label class="dim">Enabled</label>
+            <button class="mode-btn scale-overlay-btn" data-val="true">On</button>
+            <button class="mode-btn scale-overlay-btn" data-val="false">Off</button>
+            <span class="dim tiny">layer leg shadows on top of any mode</span>
+          </div>
+        </div>
+        <div class="param-group" id="shadows-params"></div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <section id="tab-scene" class="pane">
+      <nav class="subtabs" role="tablist">
+        <button class="subtab active" data-subtab="play">Play</button>
+        <button class="subtab" data-subtab="physics">Physics</button>
+      </nav>
+
+      <!-- Play: patch picker + ovals + master + palette + events -->
+      <div class="subpane active" data-pane="play">
+        <!-- Just the patch picker up top — everything sequencer-related
+             lives below in the always-visible sequencer block. -->
+        <div class="ableton-bar">
+          <div class="bar-group" title="Patches (synth + curves + physics snapshot)">
+            <label class="dim tiny">patch</label>
+            <select id="patch-picker" class="tiny-sel"></select>
+            <button class="tiny-btn" id="patch-load" title="Load patch">↻</button>
+            <button class="tiny-btn" id="patch-save" title="Overwrite current patch">💾</button>
+            <button class="tiny-btn" id="patch-new" title="Save as new patch">+</button>
+            <button class="tiny-btn" id="patch-delete" title="Delete patch">🗑</button>
+          </div>
+          <div class="bar-sep"></div>
+          <div class="bar-group" title="Engine reset (independent of sequencer)">
+            <button class="tiny-btn" id="scene-reset" title="Reset engine — clears all modulators, snaps state to defaults, beat to 0">⟲ Reset</button>
+          </div>
+        </div>
+
+        <!-- Synth controls + events: three columns -->
+        <div class="synth-row">
+          <div class="synth-col">
+            <h4>Ovals</h4>
+            <div id="synth-ovals" class="oval-row"></div>
+          </div>
+          <div class="synth-col">
+            <h4>Master</h4>
+            <div id="synth-master-params" class="compact-sliders"></div>
+            <h4 style="margin-top:8px;">Palette</h4>
+            <div id="scene-palette-selector"></div>
+          </div>
+          <div class="synth-col synth-col-events">
+            <h4>Events</h4>
+            <div id="synth-events"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Physics: ball knobs --------------------------------- -->
+      <div class="subpane" data-pane="physics">
+        <div id="synth-physics"></div>
+      </div>
+
+      <!-- Sequencer — always visible below the sub-tabs ------ -->
+      <div class="sequencer-block">
+        <h3>Sequencer</h3>
+        <div class="ableton-bar">
+          <div class="bar-group" title="BPM + phase">
+            <input type="number" id="scene-bpm" min="20" max="300" step="0.5" value="120" class="tiny-num bpm-num">
+            <button class="tiny-btn" id="scene-tap-tempo" title="Tap tempo">Tap</button>
+            <button class="tiny-btn" id="scene-beat-reset" title="Drift loop so this moment = beat 1">Set 1</button>
+            <span class="beat-pulse" id="scene-beat-pulse"></span>
+          </div>
+          <div class="bar-sep"></div>
+          <div class="bar-group" title="Sequence files">
+            <label class="dim tiny">seq</label>
+            <select id="seq-picker" class="tiny-sel"></select>
+            <button class="tiny-btn" id="seq-save" title="Save">💾</button>
+            <button class="tiny-btn" id="seq-new" title="New">+</button>
+            <button class="tiny-btn" id="seq-duplicate" title="Duplicate">⎘</button>
+            <button class="tiny-btn" id="seq-rename" title="Rename">✎</button>
+            <button class="tiny-btn" id="seq-delete" title="Delete">🗑</button>
+          </div>
+          <div class="bar-sep"></div>
+          <div class="bar-group">
+            <button class="tiny-btn play-btn" id="seq-play" title="Start sequencer (animation engine runs continuously regardless)">▶</button>
+            <button class="tiny-btn" id="seq-stop" title="Stop sequencer (engine + manual events keep working)">■</button>
+            <label class="tiny dim" title="Automatically start the sequencer when the scene mode is entered. Turn OFF when driving from Ableton OSC.">
+              <input type="checkbox" id="seq-autoplay" checked> auto
+            </label>
+            <label class="dim tiny">loop</label>
+            <select id="seq-loop-length" class="tiny-sel">
+              <option value="4">1 bar</option>
+              <option value="8">2 bars</option>
+              <option value="16" selected>4 bars</option>
+              <option value="32">8 bars</option>
+              <option value="64">16 bars</option>
+              <option value="custom">custom…</option>
+            </select>
+            <input type="number" id="seq-loop-custom" class="tiny-num" min="0.5" max="256" step="0.5" placeholder="bars" hidden>
+            <label class="dim tiny">snap</label>
+            <select id="seq-snap" class="tiny-sel">
+              <option value="1">1/4</option>
+              <option value="0.5">1/8</option>
+              <option value="0.25" selected>1/16</option>
+              <option value="0.125">1/32</option>
+              <option value="0">none</option>
+            </select>
+            <label class="dim tiny">zoom</label>
+            <button class="tiny-btn" id="seq-zoom-out" title="Zoom out">−</button>
+            <button class="tiny-btn" id="seq-zoom-in" title="Zoom in">+</button>
+            <button class="tiny-btn" id="seq-zoom-fit" title="Fit">fit</button>
+            <button class="tiny-btn" id="seq-half" title="Halve clip length (notes packed tighter — plays 2× faster)">÷2</button>
+            <button class="tiny-btn" id="seq-double" title="Double clip length (notes spread out — plays 2× slower)">×2</button>
+            <button class="tiny-btn" id="seq-dup" title="Duplicate: double the loop and repeat the pattern (no speed change)">⎘×2</button>
+            <button class="tiny-btn" id="seq-clear" title="Clear all notes">clear</button>
+            <span class="dim tiny" id="seq-info">stopped</span>
+          </div>
+        </div>
+        <div id="piano-roll-wrap" class="piano-roll-wrap"></div>
+        <div class="dim tiny" style="margin-top:4px;">
+          empty = add note · click note = fire event (mousedown/up = note_on/off) · drag body = move (horizontal+vertical) · right edge = resize · double-click = delete · Shift+drag = marquee · Alt = bypass snap · Space = play/stop · Del = delete selected
+        </div>
+      </div>
     </section>
 
     <!-- ============================================================ -->
@@ -106,6 +325,43 @@
 
     <!-- ============================================================ -->
     <section id="tab-telemetry" class="pane">
+      <h2>History</h2>
+      <div class="th-controls">
+        <div class="th-range-row">
+          <label class="dim">Range</label>
+          <select id="th-range" class="tiny-sel">
+            <option value="1h" selected>Last 1 hour</option>
+            <option value="6h">Last 6 hours</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="3d">Last 3 days</option>
+            <option value="7d">Last 7 days</option>
+            <option value="14d">Last 14 days</option>
+          </select>
+          <label class="dim" title="Modes to include in time-per-state chart">Modes</label>
+          <span id="th-mode-filter" class="th-mode-filter"></span>
+          <span id="th-clock-warn" class="th-clock-warn" hidden></span>
+        </div>
+        <div class="th-totals">
+          <span>Energy: <b id="th-total-energy">—</b></span>
+          <span id="th-total-modes" class="dim"></span>
+        </div>
+      </div>
+      <div class="th-charts">
+        <div class="th-chart">
+          <div class="th-chart-label" id="th-label-energy">Energy (Wh / min)</div>
+          <svg id="th-chart-energy" class="th-svg" preserveAspectRatio="none" viewBox="0 0 900 110"></svg>
+        </div>
+        <div class="th-chart">
+          <div class="th-chart-label" id="th-label-modes">Time per mode (s / min)</div>
+          <svg id="th-chart-modes" class="th-svg" preserveAspectRatio="none" viewBox="0 0 900 110"></svg>
+        </div>
+        <div class="th-chart">
+          <div class="th-chart-label">Weight (kg) — leg 1 / leg 2 / total</div>
+          <svg id="th-chart-weight" class="th-svg" preserveAspectRatio="none" viewBox="0 0 900 110"></svg>
+        </div>
+        <div id="th-xaxis" class="th-xaxis"></div>
+      </div>
+
       <h2>System</h2>
       <div class="cards">
         <div class="card">
@@ -155,6 +411,12 @@
           <div class="card-val" id="t-eth">—</div>
           <div class="card-sub" id="t-eth-sub">—</div>
         </div>
+        <div class="card" id="t-scale-card">
+          <div class="card-label">Bench scale</div>
+          <div class="card-val"><span id="t-scale-total">—</span> kg</div>
+          <div class="card-sub" id="t-scale-sub">—</div>
+          <div class="card-sub dim tiny" id="t-scale-legs">—</div>
+        </div>
       </div>
 
       <h2>Recent boots</h2>
@@ -170,6 +432,7 @@
     </section>
   </main>
 
-  <script src="/static/admin.js?v=14"></script>
+  <script src="/static/lib/nexusui.min.js"></script>
+  <script src="/static/admin.js?v=81"></script>
 </body>
 </html>
