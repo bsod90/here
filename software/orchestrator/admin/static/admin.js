@@ -219,7 +219,13 @@ document.getElementById('add-target-btn').onclick = async () => {
 };
 
 // ── Mode ───────────────────────────────────────────────────
-document.querySelectorAll('.mode-btn').forEach(btn => {
+// Bind ONLY the real mode-picker buttons. `.mode-btn` is also worn (for
+// styling) by other controls — the two-way toggles, the sim reload, the
+// monitor-audio button — which set their own onclick elsewhere. A bare
+// `.mode-btn` selector would clobber those handlers and POST
+// `mode/undefined` (no data-mode → 400). Hence the [data-mode] filter,
+// mirroring updateModeButtons below.
+document.querySelectorAll('.mode-btn[data-mode]').forEach(btn => {
   btn.onclick = async () => {
     await api(`mode/${btn.dataset.mode}`, { method: 'POST' });
     updateModeButtons(btn.dataset.mode);
