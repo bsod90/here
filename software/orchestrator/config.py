@@ -215,10 +215,11 @@ DEFAULT_CONFIG = {
     "audio": {
         "media_dir":         "/opt/here/media",
         "backdrop_enabled":  False,
-        "backdrop_volume":   0.5,         # 0.0 – 1.0 (driven into the ALSA mixer live)
+        "backdrop_volume":   0.5,         # 0.0 – 1.0 (software volume in the ffmpeg engine)
         "backdrop_file":     "ocean.wav",
-        # ALSA simple-mixer control used for live (gapless) volume. Empty
-        # = auto-detect (prefers PCM/Master/…); set explicitly to override.
+        # ALSA simple-mixer control, pinned to 100% so it doesn't attenuate
+        # on top of the software volume. Empty = auto-detect (prefers
+        # PCM/Master/…); set explicitly to override.
         "mixer_control":     "",
     },
 

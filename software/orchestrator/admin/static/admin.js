@@ -65,6 +65,51 @@ document.getElementById('sim-reload').onclick = () => {
 };
 // (Leaving the sim tab is handled in _activateTab.)
 
+// ── Monitor audio (live tap of the bench speaker stream) ──────
+// Off by default. One press opens /api/audio/monitor.mp3 — a never-
+// ending MP3 of the post-volume/mix engine output — into a hidden
+// <audio>. Volume already lives in the stream, so we just play at 1.0:
+// what you hear == what the speakers play. The button gesture also
+// satisfies the browser autoplay-with-sound policy.
+{
+  const btn = document.getElementById('sim-audio-btn');
+  const el = document.getElementById('sim-audio');
+  const statusEl = document.getElementById('sim-audio-status');
+  let on = false;
+  const setStatus = t => { if (statusEl) statusEl.textContent = t || ''; };
+  const paint = () => {
+    btn.textContent = on ? '🔊 Monitor audio' : '🔇 Monitor audio';
+    btn.classList.toggle('active', on);
+  };
+  function stopAudio(msg) {
+    on = false;
+    el.pause();
+    el.removeAttribute('src');
+    el.load();           // drop the HTTP connection so the engine isn't fed a dead reader
+    setStatus(msg);
+    paint();
+  }
+  async function startAudio() {
+    on = true;
+    paint();
+    setStatus('connecting…');
+    // cache-bust so we always get a fresh stream, never a closed one.
+    el.src = '/api/audio/monitor.mp3?t=' + Date.now();
+    try {
+      await el.play();
+      setStatus('live');
+    } catch (e) {
+      stopAudio('blocked — tap again');
+    }
+  }
+  btn.onclick = () => { on ? stopAudio('') : startAudio(); };
+  // The stream ends (None sentinel) when the backdrop is switched off on
+  // the Pi; reflect that instead of leaving a dead 🔊.
+  el.addEventListener('ended', () => stopAudio('stream ended'));
+  el.addEventListener('error', () => { if (on) stopAudio('no audio playing'); });
+  el.addEventListener('playing', () => { if (on) setStatus('live'); });
+}
+
 // ── UI primitives ─────────────────────────────────────────
 // Two-button (or N-button) "toggle picker" pattern. We use it for
 // scale auto-engage, weight overlay, and the three spin toggles —

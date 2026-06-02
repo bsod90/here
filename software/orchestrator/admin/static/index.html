@@ -333,8 +333,14 @@
     <section id="tab-sim" class="pane">
       <div class="sim-header">
         <span class="dim">Live mirror of the WLED feed.</span>
+        <button id="sim-audio-btn" class="mode-btn"
+                title="Listen to the live bench audio — the exact stream going to the speakers">🔇 Monitor audio</button>
+        <span id="sim-audio-status" class="dim tiny"></span>
         <button id="sim-reload" class="mode-btn" title="Reload simulator">↻</button>
       </div>
+      <!-- Driven by JS; no `controls` so it's invisible. Muted/idle until
+           the user presses Monitor audio (also satisfies autoplay policy). -->
+      <audio id="sim-audio" preload="none"></audio>
       <iframe id="sim-iframe" class="sim-frame" src="about:blank" title="HERE Simulator"></iframe>
     </section>
 
@@ -448,6 +454,6 @@
   </main>
 
   <script src="/static/lib/nexusui.min.js"></script>
-  <script src="/static/admin.js?v=84"></script>
+  <script src="/static/admin.js?v=85"></script>
 </body>
 </html>
