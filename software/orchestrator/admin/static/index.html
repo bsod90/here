@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0a0a0e">
   <title>HERE — Admin</title>
-  <link rel="stylesheet" href="/static/admin.css?v=60">
+  <link rel="stylesheet" href="/static/admin.css?v=62">
 </head>
 <body>
   <header class="topbar">
@@ -68,14 +68,14 @@
           <button class="mode-btn scale-auto-btn" data-val="false">Off</button>
         </div>
         <div class="row-line">
-          <label class="dim">Weight overlay</label>
-          <button class="mode-btn scale-overlay-btn" data-val="true">On</button>
-          <button class="mode-btn scale-overlay-btn" data-val="false">Off</button>
-        </div>
-        <div class="row-line">
           <label class="dim">Threshold</label>
           <input type="number" id="sc-threshold" class="tiny-num" min="0" step="0.5"> kg
           <span class="dim tiny">switches to occupied above this</span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Engage</label>
+          <input type="number" id="sc-engage" class="tiny-num" min="0" step="0.5"> s
+          <span class="dim tiny">above threshold for this long → occupied (dwell)</span>
         </div>
         <div class="row-line">
           <label class="dim">Release</label>
@@ -100,6 +100,21 @@
         <div class="row-line">
           <button class="mode-btn" id="sc-tare-btn">Tare (zero)</button>
           <button class="mode-btn" id="sc-calib-btn">Calibrate…</button>
+        </div>
+      </div>
+
+      <h2>Audio</h2>
+      <div class="param-group" id="audio-card">
+        <div class="row-line">
+          <label class="dim">Ocean backdrop</label>
+          <button class="mode-btn audio-backdrop-btn" data-val="true">On</button>
+          <button class="mode-btn audio-backdrop-btn" data-val="false">Off</button>
+          <span id="audio-backdrop-status" class="dim tiny"></span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Volume</label>
+          <input type="range" id="audio-vol" min="0" max="100" step="1" style="flex:1;">
+          <span id="audio-vol-val" class="dim tiny" style="min-width:38px; text-align:right;">—</span>
         </div>
       </div>
 
@@ -433,6 +448,6 @@
   </main>
 
   <script src="/static/lib/nexusui.min.js"></script>
-  <script src="/static/admin.js?v=81"></script>
+  <script src="/static/admin.js?v=84"></script>
 </body>
 </html>

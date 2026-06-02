@@ -29,6 +29,7 @@ from . import scene as scene_routes
 from . import scale as scale_routes
 from . import telemetry as telemetry_routes
 from . import ap as ap_routes
+from . import audio as audio_routes
 
 # Re-export so existing `from admin.routes import create_app, LogHandler`
 # import paths keep working without any caller edits.
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 def create_app(config, engine, transport, telemetry=None, sim_bus=None,
                osc_state=None, scene=None, sequence_store=None,
                patch_store=None, tap_tracker=None, scale=None,
-               telemetry_history=None) -> FastAPI:
+               telemetry_history=None, audio=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -96,6 +97,7 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
     scale_routes.register(app, scale)
     telemetry_routes.register(app, telemetry, telemetry_history)
     ap_routes.register(app)
+    audio_routes.register(app, audio, config)
 
     # ── Inline: config / defaults ──────────────────────────────
     @app.get("/api/config")

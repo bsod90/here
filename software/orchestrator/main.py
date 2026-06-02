@@ -17,6 +17,7 @@ from scene.animations import REGISTRY as SCENE_ANIMATION_REGISTRY
 from admin.routes import create_app, LogHandler
 from scale import ScaleSensor, ScaleConfig
 from telemetry_history import TelemetryHistory
+from audio import AudioPlayer
 
 
 def main():
@@ -205,11 +206,24 @@ def main():
         scale=scale,
     )
 
+    # Audio playback (ocean backdrop loop, more sounds later).
+    audio_cfg = config.get("audio") or {}
+    audio = AudioPlayer(
+        media_dir=audio_cfg.get("media_dir", "/opt/here/media"),
+        backdrop_file=audio_cfg.get("backdrop_file", "ocean.wav"),
+        mixer_control=audio_cfg.get("mixer_control") or None,
+    )
+    # Apply saved on/off state at boot — survive deploy.
+    audio.set_backdrop(
+        enabled=bool(audio_cfg.get("backdrop_enabled", False)),
+        volume=float(audio_cfg.get("backdrop_volume", 0.5)),
+    )
+
     app = create_app(config, engine, transport, telemetry, sim_bus,
                      osc_state=osc_state, scene=scene,
                      sequence_store=seq_store, patch_store=patch_store,
                      tap_tracker=tap_tracker, scale=scale,
-                     telemetry_history=telemetry_history)
+                     telemetry_history=telemetry_history, audio=audio)
 
     # Start background workers
     engine.start()
@@ -222,6 +236,7 @@ def main():
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     finally:
+        audio.stop()
         telemetry_history.stop()
         scale.stop()
         osc_server.stop()

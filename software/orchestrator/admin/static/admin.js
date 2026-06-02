@@ -96,6 +96,17 @@ function refreshToggle(selector, currentValue) {
     b.classList.toggle('active', b.dataset.val === target));
 }
 
+// Update an <input>/<select> value from a poll, but skip the write if
+// the user is currently focused on it (otherwise we stomp their typing
+// — they can't clear the field, the next poll snaps it back, etc.).
+// Pass either an id string or the element itself.
+function setInputIfNotFocused(elOrId, value) {
+  const el = (typeof elOrId === 'string')
+    ? document.getElementById(elOrId) : elOrId;
+  if (!el || el === document.activeElement) return;
+  el.value = value;
+}
+
 // ── API helpers ────────────────────────────────────────────
 async function api(path, opts = {}) {
   const r = await fetch('/api/' + path, {
@@ -689,7 +700,6 @@ async function refreshTelemetry() {
 // ── Bench scale (dual HX711) ────────────────────────────────
 // Backend speaks grams; UI displays + accepts kg. fmtKg picks 1 decimal
 // for typical bench weights, 2 decimals near zero so tare drift is visible.
-let _scaleLastEdit = 0;  // debounce: avoid stomping user typing in the inputs
 function fmtKg(grams) {
   const kg = (grams || 0) / 1000;
   return Math.abs(kg) < 10 ? kg.toFixed(2) : kg.toFixed(1);
@@ -727,14 +737,15 @@ async function refreshScale() {
                 typeof s.auto_engage === 'boolean' ? s.auto_engage : null);
   refreshToggle('.scale-overlay-btn',
                 typeof s.weight_overlay === 'boolean' ? s.weight_overlay : null);
-  // Don't overwrite inputs while the user is actively editing them.
-  const stale = Date.now() - _scaleLastEdit > 1500;
-  if (stale) {
-    document.getElementById('sc-threshold').value = (s.threshold_grams / 1000).toFixed(1);
-    document.getElementById('sc-release').value = s.release_seconds;
-    document.getElementById('sc-occ-mode').value = s.occupied_mode;
-    document.getElementById('sc-idle-mode').value = s.idle_mode;
-  }
+  // Don't overwrite inputs the user is currently editing — otherwise
+  // they can't clear the field (poll snaps it right back). focus-check
+  // beats the old timestamp debounce because `input` events during
+  // typing don't fire the existing `change` handler.
+  setInputIfNotFocused('sc-threshold', (s.threshold_grams / 1000).toFixed(1));
+  setInputIfNotFocused('sc-release', s.release_seconds);
+  setInputIfNotFocused('sc-engage', s.engage_seconds);
+  setInputIfNotFocused('sc-occ-mode', s.occupied_mode);
+  setInputIfNotFocused('sc-idle-mode', s.idle_mode);
 
   // ── Telemetry-tab card (only when visible) ─
   if (document.getElementById('tab-telemetry').classList.contains('active')) {
@@ -753,7 +764,6 @@ async function refreshScale() {
 
 function bindScaleControls() {
   async function pushSettings(patch) {
-    _scaleLastEdit = Date.now();
     try { await api('scale', { method: 'PUT', body: JSON.stringify(patch) }); }
     catch {}
     refreshScale();
@@ -769,6 +779,10 @@ function bindScaleControls() {
   document.getElementById('sc-release').addEventListener('change', e => {
     const v = parseFloat(e.target.value);
     if (!Number.isNaN(v) && v >= 1) pushSettings({ release_seconds: v });
+  });
+  document.getElementById('sc-engage').addEventListener('change', e => {
+    const v = parseFloat(e.target.value);
+    if (!Number.isNaN(v) && v >= 0) pushSettings({ engage_seconds: v });
   });
   document.getElementById('sc-occ-mode').onchange = e =>
     pushSettings({ occupied_mode: e.target.value });
@@ -792,6 +806,87 @@ function bindScaleControls() {
     } catch {}
     refreshScale();
   };
+}
+
+// ── Audio (backdrop loop + volume) ─────────────────────────
+// Mirrors the scale pattern: refresh paints state from the backend
+// snapshot, bind wires the user controls to a PUT /api/audio. State
+// is persisted server-side so the toggle survives a restart.
+let _audioVolLastEdit = 0;
+async function refreshAudio() {
+  let s;
+  try { s = await api('audio'); } catch { return; }
+  if (!s || s.error) return;
+  refreshToggle('.audio-backdrop-btn',
+                typeof s.backdrop_enabled === 'boolean' ? s.backdrop_enabled : null);
+  // Slider value — skip while user is dragging it (focus check pattern).
+  const slider = document.getElementById('audio-vol');
+  const valLabel = document.getElementById('audio-vol-val');
+  if (typeof s.backdrop_volume === 'number') {
+    const pct = Math.round(s.backdrop_volume * 100);
+    if (slider && slider !== document.activeElement
+        && Date.now() - _audioVolLastEdit > 1000) {
+      slider.value = pct;
+    }
+    if (valLabel) valLabel.textContent = `${pct}%`;
+  }
+  // Status text — let the user know if ffplay isn't actually running
+  // (e.g., media file missing or ffplay crashed) so a toggled-On
+  // button without sound isn't a mystery.
+  const status = document.getElementById('audio-backdrop-status');
+  if (status) {
+    if (s.backdrop_enabled && !s.backdrop_present) {
+      status.textContent = `⚠ ${s.backdrop_file} missing on Pi`;
+    } else if (s.backdrop_enabled && !s.running) {
+      status.textContent = '⚠ player not running';
+    } else {
+      status.textContent = '';
+    }
+  }
+}
+
+function bindAudioControls() {
+  async function push(patch) {
+    try { await api('audio', { method: 'PUT', body: JSON.stringify(patch) }); }
+    catch {}
+    refreshAudio();
+  }
+  bindToggle('.audio-backdrop-btn',
+             v => push({ backdrop_enabled: v === 'true' }));
+  const slider = document.getElementById('audio-vol');
+  if (slider) {
+    const valLabel = document.getElementById('audio-vol-val');
+    // The backend now changes volume live via the ALSA mixer (no restart,
+    // no glitch), so we can stream updates while dragging for a smooth
+    // feel. Throttle PUTs to ~8/sec and fire a final one on release so the
+    // exact resting value lands. These volume PUTs deliberately don't call
+    // refreshAudio() — re-GETing on every step would be wasteful and could
+    // snap the slider mid-drag.
+    let lastSent = 0, trailing = null;
+    const sendVol = () => {
+      lastSent = Date.now();
+      const pct = parseInt(slider.value, 10);
+      if (Number.isFinite(pct)) {
+        api('audio', { method: 'PUT',
+                       body: JSON.stringify({ backdrop_volume: pct / 100 }) })
+          .catch(() => {});
+      }
+    };
+    slider.addEventListener('input', () => {
+      _audioVolLastEdit = Date.now();
+      if (valLabel) valLabel.textContent = `${slider.value}%`;
+      const wait = 120 - (Date.now() - lastSent);
+      if (wait <= 0) { clearTimeout(trailing); trailing = null; sendVol(); }
+      else if (!trailing) {
+        trailing = setTimeout(() => { trailing = null; sendVol(); }, wait);
+      }
+    });
+    // Guarantee the final resting value is sent even if it fell inside a
+    // throttle window.
+    slider.addEventListener('change', () => {
+      clearTimeout(trailing); trailing = null; sendVol();
+    });
+  }
 }
 
 // Preview-phase dropdown for the breathing session. Persists to
@@ -3204,6 +3299,11 @@ async function init() {
   bindScaleControls();
   refreshScale();
   setInterval(refreshScale, 1000);
+  // Audio: poll less frequently — the only state that changes from
+  // outside the user's click is `running` (ffplay died / no media file).
+  bindAudioControls();
+  refreshAudio();
+  setInterval(refreshAudio, 3000);
   // History charts — bind controls, kick off the initial fetch so the
   // graphs are already populated whichever tab the user starts on
   // (the early #tab hash-activation path runs before _thState exists,

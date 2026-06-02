@@ -95,7 +95,8 @@ b { font-weight: 600; color: var(--fg); }
 
 /* Scale auto-engage + weight-overlay toggles (Run tab). */
 .scale-auto-btn.active,
-.scale-overlay-btn.active {
+.scale-overlay-btn.active,
+.audio-backdrop-btn.active {
   background: var(--accent-bg);
   border-color: var(--accent);
   color: var(--accent);

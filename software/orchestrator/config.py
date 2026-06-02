@@ -209,6 +209,19 @@ DEFAULT_CONFIG = {
         "release_ms": 180,
     },
 
+    # Audio playback — ocean.wav backdrop loop today, more sounds later.
+    # `media_dir` is the on-Pi path; deploy/install.sh syncs the repo's
+    # ./media/ → /opt/here/media/ separately from the orchestrator source.
+    "audio": {
+        "media_dir":         "/opt/here/media",
+        "backdrop_enabled":  False,
+        "backdrop_volume":   0.5,         # 0.0 – 1.0 (driven into the ALSA mixer live)
+        "backdrop_file":     "ocean.wav",
+        # ALSA simple-mixer control used for live (gapless) volume. Empty
+        # = auto-detect (prefers PCM/Master/…); set explicitly to override.
+        "mixer_control":     "",
+    },
+
     # Dual-HX711 bench scale. Wiring: DT → 16/19, shared SCK → 21,
     # VCC → 3.3V. counts_per_gram[i] is set by the calibrate API; until
     # then `grams` is just (raw - tare). Threshold is in grams of the
@@ -225,6 +238,9 @@ DEFAULT_CONFIG = {
         "sign": [-1, -1],
         "auto_engage": True,
         "threshold_grams": 15000.0,
+        # Dwell on both sides of the threshold so single-leg sensor
+        # noise can't flip the bench state in a single tick.
+        "engage_seconds": 5.0,
         "release_seconds": 60.0,
         "occupied_mode": "breathing",
         "idle_mode": "standby",
