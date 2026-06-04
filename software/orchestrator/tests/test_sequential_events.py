@@ -46,17 +46,21 @@ def _advance_to(scn, beat: float, step: float = 0.1, time_ms_base: float = 0.0) 
 class TestDissolveCycle(unittest.TestCase):
     """Dissolve always ends with alpha = 0 (scene empty)."""
 
-    def test_single_dissolve_ends_empty(self):
+    def test_single_dissolve_ends_in_floating_cloud(self):
         scn = _build()
         scn.tick(0.0)
         scn.trigger("dissolve", duration_beats=4.0)
         _advance_to(scn, 6.0)   # well past total duration
-        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2,
-                               msg="alpha must be 0 after dissolve completes")
+        # Dissolve now settles into a floating cloud: visible (alpha up),
+        # particles active (dissolve_amount=1), free-drifting (orbit_lock 0).
+        self.assertGreater(scn.state["alpha"], 0.5,
+                           msg="dissolve should end in a visible floating cloud")
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
+        self.assertAlmostEqual(scn.state["dot_orbit_lock"], 0.0, places=2)
 
-    def test_repeated_dissolves_all_end_empty(self):
+    def test_repeated_dissolves_all_end_floating(self):
         """Triggering Dissolve five times in a row at varied beats must
-        always end with alpha = 0 — no stuck state."""
+        always settle into the floating cloud — no stuck state."""
         scn = _build()
         scn.tick(0.0)
         scn.trigger("dissolve", duration_beats=4.0)
@@ -64,10 +68,11 @@ class TestDissolveCycle(unittest.TestCase):
         for k in range(5):
             scn.trigger("dissolve", duration_beats=4.0)
             _advance_to(scn, scn._clock.now_beat() + 4.5)
-            self.assertAlmostEqual(
-                scn.state["alpha"], 0.0, places=2,
+            self.assertGreater(
+                scn.state["alpha"], 0.5,
                 msg=f"dissolve iteration {k}: alpha was {scn.state['alpha']:.3f}",
             )
+            self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
 
 
 class TestRespawnCycle(unittest.TestCase):

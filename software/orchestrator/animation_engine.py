@@ -73,8 +73,14 @@ def _render_midi(engine, frame, t_ms, fade_in, fade_out, state):
     scene_cfg = engine.config.get("scene") or {}
     anim_name = scene_cfg.get("animation") or "synth"
     anim_cfg = scene_cfg.get(anim_name) or {}
-    if hasattr(engine.scene._animation, "update_meta"):
+    # Re-apply persisted config to the animation meta ONLY when it changed.
+    # Live knob edits arrive over OSC via apply_synth_meta (which updates
+    # meta directly, NOT config); re-applying config every frame would
+    # revert those edits each frame — the "knob does nothing" bug.
+    if (hasattr(engine.scene._animation, "update_meta")
+            and anim_cfg != engine._last_synth_cfg):
         engine.scene._animation.update_meta(anim_cfg)
+        engine._last_synth_cfg = dict(anim_cfg)
     breath_cfg = engine.config.get("breathing") or {}
     render_params = {"palettes": breath_cfg.get("palettes", [])}
     engine.scene.tick(t_ms)
@@ -127,6 +133,10 @@ class AnimationEngine:
         # tests can pass a fake clock to drive the frame loop or the
         # transition coordinator without real-time sleeps.
         self._clock = time_provider
+        # Last scene.<anim> config applied to the animation meta. We only
+        # re-apply on change so live knob edits over OSC aren't clobbered
+        # every frame (see _render_midi).
+        self._last_synth_cfg = None
         self.frame = bytearray(FRAME_BYTES)
         # Migrate stale modes (e.g. "music" before the scene refactor) so a
         # saved config from a previous version doesn't leave the engine in a

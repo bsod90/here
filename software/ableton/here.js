@@ -140,18 +140,21 @@ function clamp01(x) {
     return x;
 }
 
-// ── Max integration (only when running inside v8) ──────────────
-// `outlet` is a Max global; under Node it's undefined and we just
-// expose the pure functions for testing.
-if (typeof outlet !== 'undefined') {
-    var _state = createState();
+// ── Max integration ────────────────────────────────────────────
+// Max dispatches an incoming message to the GLOBAL function whose name
+// matches the message's first symbol (`note`, `noteoff`, `knob`, `bpm`,
+// `tap`, `palette`, `reset`). The v8 object only sees top-level
+// functions — nesting these in a block makes Max log
+// "no function note [here.js]" and nothing is emitted. So they live at
+// global scope; `_emit` is a no-op outside Max so Node/Jest can load
+// this file unchanged.
+var _state = createState();
 
-    function _emit(msg) {
-        if (msg === null) return;
-        // outlet(0, addr, arg1, arg2, ...) — Max expects spread args
-        // so the patcher receives them as a proper list.
-        outlet.apply(null, [0].concat(msg));
-    }
+function _emit(msg) {
+    if (msg === null) return;
+    if (typeof outlet === 'undefined') return;  // not running inside Max
+    outlet.apply(null, [0].concat(msg));
+}
 
     // Message handlers — Max calls the function whose name matches the
     // first symbol of the incoming message.
@@ -214,7 +217,6 @@ if (typeof outlet !== 'undefined') {
         // legitimate note_on.
         _state = createState();
     }
-}
 
 // ── Node export for Jest ─────────────────────────────────────────
 if (typeof module !== 'undefined' && module.exports) {

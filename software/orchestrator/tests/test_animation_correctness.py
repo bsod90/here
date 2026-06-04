@@ -52,38 +52,34 @@ def _advance_to(scn, beat: float, step: float = 0.1, time_ms_base: float = 0.0) 
 
 # ───────────────────────────── Dissolve fade base value ──
 
-class TestDissolveFadeBaseValue(unittest.TestCase):
-    """The fade phase's base alpha is read LIVE inside the scheduled
-    callback so it tracks any alpha changes during disperse+float."""
+class TestFadeOutGhost(unittest.TestCase):
+    """fade_out snapshots the current frame into a decaying ghost layer
+    and blanks the live scene, so a follow-up appearance event brings new
+    content in while only the old content fades out."""
 
-    def test_fade_picks_up_live_alpha_not_stale(self):
-        """Pulse during disperse phase shouldn't make fade snap back to
-        a stale captured base (the bug fixed in iter 1)."""
+    def test_fade_out_blanks_live_and_arms_ghost(self):
         scn = _build_scene()
         scn.tick(0.0)
-        # 4-beat dissolve: disperse=70% (2.8), float=10% (0.4), fade=20% (0.8).
-        # _begin_fade fires at beat ~3.2.
-        scn.trigger("dissolve", duration_beats=4.0)
-        _advance_to(scn, 3.3)
-        # At this point the fade modulator should exist with base ≈ 1.0.
-        fade_mods = [m for m in scn._modulators if m.tag == "dissolve-fade"]
-        self.assertEqual(len(fade_mods), 1,
-                         "_begin_fade should have created exactly one fade mod")
-        self.assertAlmostEqual(fade_mods[0].base_value, 1.0, places=1,
-                               msg="fade base should be the live alpha at fade-start")
+        scn.trigger("expand", duration_beats=0.5)
+        _advance_to(scn, 1.0)
+        scn.trigger("fade_out", duration_beats=2.0)
+        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2,
+                               msg="fade_out blanks the live scene immediately")
+        self.assertAlmostEqual(scn.state["fade_ghost_amount"], 1.0, places=1)
+        self.assertEqual(len([m for m in scn._modulators if m.tag == "fadeout"]), 1)
 
-    def test_dissolve_with_low_alpha_at_fade_start(self):
-        """If something set alpha to 0.3 during float phase, fade ramps
-        from 0.3, not 1.0 (no upward jump)."""
+    def test_fade_out_then_regrow_brings_new_content(self):
         scn = _build_scene()
         scn.tick(0.0)
-        scn.trigger("dissolve", duration_beats=4.0)
-        _advance_to(scn, 3.0)   # mid-float (after disperse-end at 2.8)
-        scn.set_state("alpha", 0.3)
-        _advance_to(scn, 3.3)   # past _begin_fade
-        fade_mods = [m for m in scn._modulators if m.tag == "dissolve-fade"]
-        self.assertEqual(len(fade_mods), 1)
-        self.assertAlmostEqual(fade_mods[0].base_value, 0.3, places=1)
+        scn.trigger("expand", duration_beats=0.5)
+        _advance_to(scn, 1.0)
+        scn.trigger("fade_out", duration_beats=3.0)
+        scn.trigger("regrow", duration_beats=3.0)   # new content, simultaneous
+        _advance_to(scn, 4.5)
+        self.assertAlmostEqual(scn.state["fade_ghost_amount"], 0.0, places=2,
+                               msg="ghost should have fully faded")
+        self.assertGreater(scn.state["alpha"], 0.5,
+                           msg="regrow's new rings should be visible")
 
 
 class TestDissolveCurrentAmountBase(unittest.TestCase):
@@ -253,19 +249,21 @@ class TestDissolveRespawnRendering(unittest.TestCase):
         self.assertGreater(bright, 0.5,
                            f"mid-dissolve frame too dark: {bright:.3f}")
 
-    def test_dissolve_complete_alpha_zero_renders_dark(self):
+    def test_dissolve_ends_in_visible_floating_cloud(self):
         scn = self._build()
         scn.tick(0.0)
         scn.trigger("dissolve", duration_beats=2.0)
-        # Past full duration: alpha pinned 0 → frame should be ~black.
+        # Dissolve now SETTLES into a floating cloud (no fade-to-empty),
+        # so the frame stays visible past the duration.
         t_ms = _advance_to(scn, 2.5)
         scn.render(self.frame, t_ms, {"palettes": [{
             "rim_color": [255, 0, 0], "inner_color": [0, 255, 0],
             "outer_color": [0, 0, 255], "trail_color": [255, 255, 0],
         }]})
         bright = self._frame_brightness()
-        self.assertLess(bright, 1.0,
-                        f"post-dissolve frame should be dark, got {bright:.3f}")
+        self.assertGreater(bright, 0.3,
+                           f"post-dissolve floating cloud should be visible, got {bright:.3f}")
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
 
     def test_respawn_ends_visible(self):
         scn = self._build()
@@ -280,25 +278,22 @@ class TestDissolveRespawnRendering(unittest.TestCase):
         self.assertGreater(bright, 1.0,
                            f"post-respawn frame should be visible, got {bright:.3f}")
 
-    def test_dissolve_alpha_doesnt_jump_at_fade_start(self):
-        """Frame-by-frame: alpha should be monotonically non-increasing
-        once the fade phase begins. No upward spikes (the stale-base bug)."""
+    def test_fade_out_extinguishes_to_dark(self):
+        """fade_out is the new 'extinguish to empty' event: it blanks live
+        state immediately and fades a ghost of the old frame to black."""
         scn = self._build()
         scn.tick(0.0)
-        scn.trigger("dissolve", duration_beats=4.0)
-        # Walk through and sample alpha every 0.1 beats from just past
-        # _begin_fade (beat 2.4) to the end (beat 4.0).
-        _advance_to(scn, 2.4)
-        prev_alpha = scn.state["alpha"]
-        for target in np.arange(2.5, 4.01, 0.1):
-            _advance_to(scn, float(target), step=0.05)
-            cur = scn.state["alpha"]
-            # Allow a tiny epsilon for floating point noise.
-            self.assertLessEqual(
-                cur, prev_alpha + 0.05,
-                f"alpha jumped UP at beat {target}: {prev_alpha:.3f} → {cur:.3f}",
-            )
-            prev_alpha = cur
+        scn.trigger("expand", duration_beats=0.5)
+        _advance_to(scn, 1.0)
+        scn.trigger("fade_out", duration_beats=2.0)
+        t_ms = _advance_to(scn, 3.5)   # past the ghost fade
+        scn.render(self.frame, t_ms, {"palettes": [{
+            "rim_color": [255, 0, 0], "inner_color": [0, 255, 0],
+            "outer_color": [0, 0, 255], "trail_color": [255, 255, 0],
+        }]})
+        self.assertLess(self._frame_brightness(), 0.5,
+                        "fade_out should leave the frame dark")
+        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2)
 
 
 # ───────────────────────────── Cross-action interactions ──
@@ -316,20 +311,22 @@ class TestCrossActionInteractions(unittest.TestCase):
         _advance_to(scn, 0.5)
         scn.trigger("expand", duration_beats=2.0)
         _advance_to(scn, 5.0)
-        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2,
-                               msg="dissolve should still end with alpha=0")
+        # Dissolve settles into a floating cloud (visible), not empty.
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
+        self.assertGreater(scn.state["alpha"], 0.5,
+                           msg="dissolve should end in a visible floating cloud")
 
     def test_pulse_during_dissolve_disperse_doesnt_corrupt_fade(self):
         """Pulse is additive on alpha. During dissolve's disperse phase,
-        pulse should add and decay normally; fade phase should still
-        ramp alpha from live state to 0."""
+        pulse should add and decay normally; the cloud still ends visible."""
         scn = _build_scene()
         scn.tick(0.0)
         scn.trigger("dissolve", duration_beats=4.0)
         _advance_to(scn, 0.5)   # mid-disperse
         scn.trigger("pulse", duration_beats=0.25)
         _advance_to(scn, 5.0)   # well past dissolve completion
-        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2)
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
+        self.assertGreater(scn.state["alpha"], 0.5)
 
     def test_repeated_palette_swaps_dont_leak_scheduled_callbacks(self):
         """Triggering color_palette many times shouldn't pile up
@@ -450,12 +447,11 @@ class TestDissolveWithRadiusChange(unittest.TestCase):
         _advance_to(scn, 1.0)  # mid-disperse
         scn.trigger("contract", duration_beats=1.0)
         _advance_to(scn, 5.0)
-        # Dissolve should still complete cleanly. Final state (as of
-        # iter 35): alpha=0 (faded), dissolve_amount=0 (particles
-        # cleared by _pin_dark), particles=None.
-        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2)
-        self.assertAlmostEqual(scn.state["dissolve_amount"], 0.0, places=2)
-        self.assertIsNone(scn._animation._dots_xy)
+        # Dissolve still completes cleanly, settling into the floating
+        # cloud (alpha up, dissolve_amount pinned, particles alive).
+        self.assertGreater(scn.state["alpha"], 0.5)
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
+        self.assertIsNotNone(scn._animation._dots_xy)
 
     def test_expand_mid_dissolve_doesnt_corrupt_alpha_pin(self):
         scn = _build_scene()
@@ -464,8 +460,9 @@ class TestDissolveWithRadiusChange(unittest.TestCase):
         _advance_to(scn, 1.5)
         scn.trigger("expand", duration_beats=2.0)
         _advance_to(scn, 6.0)
-        # Dissolve's alpha pin should still have set alpha=0.
-        self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2)
+        # Dissolve settles into the visible floating cloud.
+        self.assertGreater(scn.state["alpha"], 0.5)
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
 
 
 # ───────────────────────────── SFX out-of-range color warning ──
@@ -572,7 +569,7 @@ class TestDeprecatedAliasWarnings(unittest.TestCase):
     """Old event names (float_*, push_center) still dispatch correctly
     but log a one-shot deprecation warning per name on first use."""
 
-    def test_float_left_warns_and_still_dispatches(self):
+    def test_float_center_warns_and_still_dispatches(self):
         from scene import event_catalog
         # Reset the warn-once set so this test is hermetic.
         if hasattr(event_catalog, "_warned_aliases"):
@@ -580,13 +577,13 @@ class TestDeprecatedAliasWarnings(unittest.TestCase):
         scn = _build_scene()
         scn.tick(0.0)
         with self.assertLogs("scene.event_catalog", level="WARNING") as captured:
-            scn.trigger("float_left")
+            scn.trigger("float_center")
             # Second call — no second warning.
-            scn.trigger("float_left")
+            scn.trigger("float_center")
         self.assertEqual(len(captured.records), 1)
         msg = captured.records[0].getMessage()
-        self.assertIn("float_left", msg)
-        self.assertIn("push_left", msg)   # suggests the canonical name
+        self.assertIn("float_center", msg)
+        self.assertIn("pull_center", msg)   # suggests the canonical name
 
     def test_canonical_names_dont_warn(self):
         from scene import event_catalog
@@ -606,7 +603,7 @@ class TestDeprecatedAliasWarnings(unittest.TestCase):
         h.setLevel(logging.WARNING)
         logger.addHandler(h)
         try:
-            scn.trigger("push_left")
+            scn.trigger("push_random")
             scn.trigger("pull_center")
         finally:
             logger.removeHandler(h)
@@ -1022,7 +1019,9 @@ class TestSceneResetClears(unittest.TestCase):
         # Set up a busy scene with stuff in every list.
         scn.trigger("expand", duration_beats=2.0)
         scn.trigger("dust", duration_beats=4.0)
-        scn.trigger("push_left", duration_beats=2.0)
+        # A duration-integrated push (directional push events were removed;
+        # add one directly to populate _active_pushes for the reset check).
+        scn.add_push(dx=1.0, dy=0.0, magnitude=1.0, duration_beats=2.0)
         scn.trigger("pull_center", duration_beats=2.0)
         scn.router.dispatch_by_name("rotate_cw", event_type="note_on", pitch=60)
         scn.schedule(1.0, lambda sc: None, tag="manual-test")
@@ -1085,17 +1084,16 @@ class TestDissolveNewPhasing(unittest.TestCase):
         _advance_to(scn, 3.4)
         self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
 
-    def test_fade_starts_after_float(self):
-        """Fade phase begins at 80% (disperse 70% + float 10%)."""
+    def test_dissolve_settles_into_floating(self):
+        """Dissolve no longer fades to empty — at the end it pins into the
+        floating-particles state: orbit_lock 0, slow speed, alpha up."""
         scn = _build_scene()
         scn.tick(0.0)
         scn.trigger("dissolve", duration_beats=4.0)
-        _advance_to(scn, 3.0)   # 75% - within float, no fade mod yet
-        fade_mods = [m for m in scn._modulators if m.tag == "dissolve-fade"]
-        self.assertEqual(len(fade_mods), 0)
-        _advance_to(scn, 3.3)   # past 80% — fade mod added
-        fade_mods = [m for m in scn._modulators if m.tag == "dissolve-fade"]
-        self.assertEqual(len(fade_mods), 1)
+        _advance_to(scn, 4.5)   # past completion
+        self.assertAlmostEqual(scn.state["dot_orbit_lock"], 0.0, places=2)
+        self.assertAlmostEqual(scn.state["dissolve_amount"], 1.0, places=2)
+        self.assertGreater(scn.state["alpha"], 0.5)
 
 
 # ───────────────────────────── Dot orbital behaviour (iter 14) ──
@@ -1272,10 +1270,10 @@ class TestSynthLiveUpdate(unittest.TestCase):
 
 @unittest.skipUnless(HAS_NUMPY, "extinction test needs numpy")
 class TestDissolveFullExtinction(unittest.TestCase):
-    """After a dissolve animation completes, the rendered frame MUST
-    be fully dark — no leftover particles, no residual ring glow, no
-    SFX still firing. User report 2026-05-25: 'dissolve should lead
-    to a complete dissolution'."""
+    """`fade_out` is the extinguish-to-empty event (dissolve now settles
+    into a floating cloud instead). After fade_out completes the rendered
+    frame MUST be fully dark — live state blanked + ghost faded, no
+    leftover particles/ring glow/SFX."""
 
     def setUp(self):
         from scene.animations.synth import _GEOM_CACHE
@@ -1310,7 +1308,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
 
     def test_dissolve_completes_fully_dark(self):
         """Standard dissolve, walk past completion, render → all zeros."""
-        self.scn.trigger("dissolve", duration_beats=4.0)
+        self.scn.trigger("fade_out", duration_beats=4.0)
         # Walk well past the dissolve's end (4 beats + safety margin).
         t_ms = _advance_to(self.scn, 6.0, step=0.05)
         self._render(t_ms)
@@ -1321,7 +1319,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
 
     def test_state_alpha_reaches_zero(self):
         """The state.alpha modulator + pin_dark must drive alpha to 0."""
-        self.scn.trigger("dissolve", duration_beats=4.0)
+        self.scn.trigger("fade_out", duration_beats=4.0)
         _advance_to(self.scn, 5.0, step=0.05)
         self.assertEqual(self.scn.state["alpha"], 0.0,
                          f"state.alpha = {self.scn.state['alpha']} after dissolve")
@@ -1330,7 +1328,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
         """Even though _dots_xy may still be populated (the simulation
         keeps advancing while dissolve_amount > 0.001), the rendered
         frame must be black because state.alpha=0 zeros the rgb."""
-        self.scn.trigger("dissolve", duration_beats=2.0)
+        self.scn.trigger("fade_out", duration_beats=2.0)
         t_ms = _advance_to(self.scn, 3.0, step=0.05)
         # Render multiple subsequent frames to be sure no late
         # contribution sneaks back in.
@@ -1346,7 +1344,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
         for dur in (0.5, 2.0, 8.0):
             self.scn.reset()
             self.scn.tick(0.0)
-            self.scn.trigger("dissolve", duration_beats=dur)
+            self.scn.trigger("fade_out", duration_beats=dur)
             t_ms = _advance_to(self.scn, dur + 1.0, step=0.05)
             self._render(t_ms)
             self.assertEqual(
@@ -1358,7 +1356,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
         """Pulse fired during dissolve adds to alpha additively. The
         dissolve_pin must still bring alpha to 0 even after the additive
         pulse contribution dies down."""
-        self.scn.trigger("dissolve", duration_beats=4.0)
+        self.scn.trigger("fade_out", duration_beats=4.0)
         _advance_to(self.scn, 1.0, step=0.05)
         # Pulse mid-dissolve.
         self.scn.trigger("pulse", duration_beats=0.25)
@@ -1372,7 +1370,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
     def test_dissolve_then_idle_extinguishes(self):
         """After dissolve completes, idling for many frames must not
         let particles or state drift back to visible."""
-        self.scn.trigger("dissolve", duration_beats=2.0)
+        self.scn.trigger("fade_out", duration_beats=2.0)
         t_ms = _advance_to(self.scn, 2.5, step=0.05)
         # Idle for 60 frames at the same beat (no time advance, just
         # repeated ticks). Render after each.
@@ -1391,7 +1389,7 @@ class TestDissolveFullExtinction(unittest.TestCase):
         not leave SFX in flight."""
         self.scn.trigger("dust", duration_beats=2.0)
         _advance_to(self.scn, 0.5, step=0.05)
-        self.scn.trigger("dissolve", duration_beats=4.0)
+        self.scn.trigger("fade_out", duration_beats=4.0)
         # Walk past dissolve completion AND dust completion.
         t_ms = _advance_to(self.scn, 5.5, step=0.05)
         self._render(t_ms)
@@ -1603,11 +1601,13 @@ class TestRegrowToPulseScenario(unittest.TestCase):
         scn.tick(0.0)
         # Fast-forward to the dissolve.
         _advance_to(scn, 48.25, step=0.1)
-        scn.trigger("dissolve", duration_beats=7.75)
+        # fade_out is the extinguish-to-empty event (dissolve now settles
+        # into a floating cloud); use it to reach the cleared state.
+        scn.trigger("fade_out", duration_beats=7.75)
         _advance_to(scn, 56.0, step=0.05)
-        # Confirm dissolve completed: alpha=0, dissolve_amount=0.
+        # Confirm the scene cleared: alpha=0.
         self.assertAlmostEqual(scn.state["alpha"], 0.0, places=2,
-                               msg="dissolve should have completed at beat 56")
+                               msg="fade_out should have completed at beat 56")
         # Walk to beat 60 — where regrow + pulse fire together.
         _advance_to(scn, 60.0, step=0.05)
         # Fire Regrow note_on. The order matters: if Pulse fires

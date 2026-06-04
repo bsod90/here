@@ -425,6 +425,22 @@ class Scene:
                 (self._clock.now_beat() + float(beats_from_now), fn, tag)
             )
 
+    def clear_all_dynamic(self) -> None:
+        """Stop everything currently animating — modulators, baselines,
+        scheduled callbacks, torques, pushes, the pull, and sfx — WITHOUT
+        touching state values, the beat clock, or the sequencer. Used by
+        the reset_scene / fade_out events to wipe in-flight motion while
+        leaving config + timing intact (unlike `reset()`, which re-inits
+        state and snaps the clock)."""
+        with self._lock:
+            self._modulators.clear()
+            self._baselines.clear()
+            self._scheduled.clear()
+            self._active_torques.clear()
+            self._active_pushes.clear()
+            self._active_pull = None
+            self._active_sfx.clear()
+
     def clear_modulators_by_tag_prefix(self, prefix: str) -> None:
         """Drop every modulator whose tag starts with `prefix`. Used to
         cancel a stale lifecycle (e.g. a previous Dissolve) when a new

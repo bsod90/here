@@ -41,10 +41,15 @@ export function connectWebSocket(leds) {
       if (event.data instanceof ArrayBuffer) {
         const buf = new Uint8Array(event.data);
         if (buf.length >= state.leds.TOTAL * 3) {
-          // Only switch to external mode if the frame has actual data (not all zeros)
-          const hasData = buf.some(v => v > 0);
-          if (hasData) {
+          // Switch to external mode on the first frame that has data (so
+          // the built-in demo keeps running until the orchestrator sends
+          // something). But once external, apply EVERY frame — including
+          // all-zero ones — otherwise a reset / fade-out / blank scene
+          // can't clear the display and the last frame sticks.
+          if (buf.some(v => v > 0)) {
             state.externalDataActive = true;
+          }
+          if (state.externalDataActive) {
             state.leds.applyFrame(buf);
           }
         }

@@ -122,7 +122,32 @@ STATE_KEYS = {
     # from the note's duration_beats: short notes = fast vibrato,
     # long notes = slow rumble. Default 1.0 = base frequencies.
     "shimmer_speed_mult": 1.0,
+    # ── Border-glow state ───────────────────────────────────────
+    # 0 = no border; >0 = a glowing gradient hugging the matrix edge.
+    # Brightness gradient is BORDER_WIDTH_PX thick inward; the colour is
+    # an angular ("round") gradient cycling through ALL palette swatch
+    # colours. `border_rotation` spins that colour wheel (Rotate events).
+    "border_glow_amount": 0.0,
+    "border_rotation": 0.0,
+    # ── Generic pulse channel ───────────────────────────────────
+    # Pulse bumps this additively (baseline 0) so layers that aren't
+    # gated by `alpha` (the border) can still flash on a Pulse.
+    "pulse": 0.0,
+    # ── Fade-out ghost ──────────────────────────────────────────
+    # >0 composites a fading snapshot of the pre-fade frame on top of the
+    # live render, so only the old content fades while new objects
+    # (regrow, etc.) appear simultaneously. Driven by the fade_out event.
+    "fade_ghost_amount": 0.0,
+    # Particle containment radius override (LED). 0 = use meta dot_bound
+    # (large, for fly-off dissolves). The floating state sets this small
+    # so particles drift WITHIN the visible matrix.
+    "dot_bound": 0.0,
 }
+
+# Border glow: how many pixels inward the edge gradient spans, and the
+# base intensity ("slightly glowing").
+BORDER_WIDTH_PX = 4.0
+BORDER_BASE_INTENSITY = 0.65
 
 
 # Cached per-grid geometry: keyed by grid id() so different grid sizes
@@ -176,10 +201,13 @@ class SynthAnimation:
         {"label": "Palette 2",     "event": "color_palette", "params": {"palette": 1}},
         {"label": "Palette 3",     "event": "color_palette", "params": {"palette": 2}},
         {"label": "Palette 4",     "event": "color_palette", "params": {"palette": 3}},
-        {"label": "Push L",        "event": "push_left"},
-        {"label": "Push R",        "event": "push_right"},
-        {"label": "Push U",        "event": "push_up"},
-        {"label": "Push D",        "event": "push_down"},
+        # Pitches 49-52 (formerly Push U/D/L/R) are the new scene-state
+        # events. FROZEN — these are in use; never move them. Grouping in
+        # the device UI is visual only and must not change these pitches.
+        {"label": "Reset",         "event": "reset_scene"},
+        {"label": "Fade Out",      "event": "fade_out"},
+        {"label": "Border",        "event": "border_glow"},
+        {"label": "Particles",     "event": "floating_particles"},
         {"label": "Pull Center",   "event": "pull_center"},
         # Per-ring rotation (outer / middle / inner; index 0/1/2).
         {"label": "Outer CW",      "event": "rotate_cw_outer"},
@@ -207,7 +235,8 @@ class SynthAnimation:
         {"label": "Wipe",          "event": "wipe"},
         # Append-only zone: new lanes go here so existing saved
         # sequences keep mapping to the same pitches.
-        {"label": "Shimmer",       "event": "shimmer"},
+        {"label": "Shimmer",        "event": "shimmer"},
+        {"label": "Dissolve Border", "event": "dissolve_border"},  # pitch 76
     ]
 
     def __init__(self, meta: dict | None = None):
@@ -223,6 +252,11 @@ class SynthAnimation:
         self._dots_seeds = None       # per-particle phase offsets
         self._dots_spawned_at_amount = 0.0
         self._dots_last_radius = 0.0
+        # Fade-out ghost: snapshot of the last rendered frame (uint8
+        # (total,3)) that fade_out captures and decays over. `_last_rgb`
+        # is updated every render so capture is just a copy.
+        self._last_rgb = None
+        self._fade_rgb = None
 
     def update_meta(self, meta: dict, *, replace: bool = False) -> None:
         """Update animation meta. Default: shallow-merge so partial
@@ -269,6 +303,15 @@ class SynthAnimation:
         self._dots_xy = None
         self._dots_heading = None
         self._dots_trail = None
+
+    def capture_ghost(self) -> None:
+        """Snapshot the last rendered frame as the fade-out ghost. The
+        fade_out event calls this, then decays `fade_ghost_amount` 1→0."""
+        if self._last_rgb is not None:
+            self._fade_rgb = self._last_rgb.copy()
+
+    def clear_ghost(self) -> None:
+        self._fade_rgb = None
 
     def spawn_particles_on_rings(self, state: dict) -> None:
         """Place particles ON the three rings, headings = orbital tangent.
@@ -491,10 +534,17 @@ class SynthAnimation:
         # of a 44-grid; particles travel beyond this only over many
         # seconds at peak speed, by which time alpha=0 has cleared
         # them via the pin_dark hook in DissolveAction.
-        bound = max(
-            float(self.meta.get("dot_bound", 80.0)),
-            float(np.max(radii_live)) * 2.0,
-        )
+        # `dot_bound` state override lets the floating state keep particles
+        # within the visible matrix (small bound → soft-reflect at edges);
+        # 0 falls back to the large meta bound used by fly-off dissolves.
+        bound_override = float(state.get("dot_bound", 0.0))
+        if bound_override > 0.0:
+            bound = max(bound_override, float(np.max(radii_live)) + 1.0)
+        else:
+            bound = max(
+                float(self.meta.get("dot_bound", 80.0)),
+                float(np.max(radii_live)) * 2.0,
+            )
         dx = self._dots_xy[:, 0]
         dy = self._dots_xy[:, 1]
         dist = np.sqrt(dx * dx + dy * dy)
@@ -962,6 +1012,13 @@ class SynthAnimation:
                 # fade out as the ring rendering takes over.
                 dot_vis = float(state.get("dot_visibility", 1.0))
                 dot_vis = max(0.0, min(1.0, dot_vis))
+                # Shimmer brightens/dims the floating cloud so the Shimmer
+                # event reads on particles too (not just rings).
+                shim_p = float(state.get("shimmer_amount", 0.0))
+                if shim_p > 0.001:
+                    sm = max(0.1, min(6.0, float(state.get("shimmer_speed_mult", 1.0))))
+                    dot_vis = dot_vis * (1.0 + shim_p * 0.4
+                                         * np.sin(t_s * 9.0 * sm + i * 1.7))
                 glow = glow + dot_glow * dot_vis
 
             glow_a = np.clip(glow, 0.0, 1.0)
@@ -985,5 +1042,63 @@ class SynthAnimation:
         brightness = float(self.meta.get("brightness", 1.0))
         rgb = rgb * (base_alpha * brightness)
 
-        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+        # ── Border-glow layer ─────────────────────────────────────────
+        # Independent of ring `alpha` so it can be the entire scene on a
+        # blank canvas; flashes via the dedicated `pulse` channel. Edge
+        # gradient (BORDER_WIDTH_PX inward) × an angular colour wheel that
+        # blends ALL palette swatch colours; `border_rotation` spins it.
+        border_amt = float(state.get("border_glow_amount", 0.0))
+        if border_amt > 0.001:
+            half = float(getattr(grid, "center", 22.0))
+            pulse_lvl = max(0.0, float(state.get("pulse", 0.0)))
+            edge_dist = np.clip(half - np.maximum(np.abs(dx_base),
+                                                  np.abs(dy_base)), 0.0, None)
+            # Pulse WIDENS the border (swells inward); brightens below too.
+            width_eff = BORDER_WIDTH_PX * (1.0 + 0.9 * pulse_lvl)
+            # Shimmer roughens the INNER EDGE with the same multi-frequency
+            # wobble the rings use — a jagged, vibrating edge (not a
+            # brightness flicker). The border ALWAYS has a light ~30%
+            # shimmer; the Shimmer event only ADDS on top (never below the
+            # baseline). Perturbs the local border width per pixel.
+            border_shim = min(1.0, 0.30 + float(state.get("shimmer_amount", 0.0)))
+            sm = max(0.1, min(6.0, float(state.get("shimmer_speed_mult", 1.0))))
+            ts = time_ms * 0.001 * sm
+            rough = (0.55 * np.sin(angle_base * 11.0 + ts * 23.0)
+                     + 0.30 * np.sin(angle_base * 17.0 - ts * 31.0)
+                     + 0.20 * np.sin(angle_base * 5.0 + ts * 47.0))
+            width_eff = np.maximum(0.5, width_eff * (1.0 + border_shim * 0.6 * rough))
+            edge_bright = np.clip(1.0 - edge_dist / width_eff, 0.0, 1.0)
+            # Rotate events spin the ovals' rotation; the border colour
+            # wheel follows their mean so "Rotate" visibly turns the border
+            # even when no rings are shown. `border_rotation` is an extra
+            # manual offset.
+            b_rot = float(state.get("border_rotation", 0.0)) + (
+                float(state.get("oval_rotation_0", 0.0))
+                + float(state.get("oval_rotation_1", 0.0))
+                + float(state.get("oval_rotation_2", 0.0))) / 3.0
+            t = ((angle_base + b_rot) / (2.0 * np.pi)) % 1.0
+            scaled = t * 8.0
+            i0 = np.floor(scaled).astype(np.int32) % 8
+            frac = (scaled - np.floor(scaled)).astype(np.float32)
+            sw = np.asarray(swatch, dtype=np.float32)            # (8,3)
+            border_color = (sw[i0] * (1.0 - frac)[:, None]
+                            + sw[(i0 + 1) % 8] * frac[:, None])
+            # Uniform brightness lift on pulse (all around, not localized).
+            b_bright = (edge_bright * border_amt * BORDER_BASE_INTENSITY
+                        * (1.0 + 0.6 * pulse_lvl))
+            rgb = rgb + border_color * (b_bright * brightness)[:, None]
+
+        rgb = np.clip(rgb, 0, 255)
+
+        # ── Fade-out ghost ────────────────────────────────────────────
+        # Composite the decaying snapshot of the pre-fade frame so only
+        # the old content fades while new objects (regrow, etc.) appear
+        # simultaneously in the live render above.
+        fade_ghost = float(state.get("fade_ghost_amount", 0.0))
+        if fade_ghost > 0.001 and self._fade_rgb is not None:
+            rgb = np.clip(rgb + self._fade_rgb.astype(np.float32) * fade_ghost,
+                          0.0, 255.0)
+
+        rgb = rgb.astype(np.uint8)
+        self._last_rgb = rgb              # snapshot source for fade_out
         frame[: grid.frame_bytes] = rgb.tobytes()

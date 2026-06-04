@@ -107,6 +107,11 @@ class RegrowAction:
             scene.set_state(f"oval_velocity_{i}", 0.0)
             scene.set_state(f"oval_rotation_{i}", 0.0)
         scene.set_state("dissolve_amount", 0.0)
+        # Restore ring-mode visibility (a prior reset/fade_out may have set
+        # orbit_lock=0 to hide rings); regrow is a ring INTRODUCTION.
+        scene.set_state("dot_orbit_lock", 1.0)
+        scene.set_state("dot_visibility", 1.0)
+        scene.set_state("border_glow_amount", 0.0)
         try:
             scene.clear_torques()                       # type: ignore[attr-defined]
         except AttributeError:
@@ -248,6 +253,13 @@ class DissolveAction:
         scene.set_state("dissolve_amount", 1.0)
         scene.set_state("dot_orbit_lock", 1.0)
         scene.set_state("dot_speed", 1.0)
+        scene.set_state("dot_visibility", 1.0)
+        # Dissolve now SETTLES into the floating-particles state instead of
+        # fading to empty: keep the cloud visible (alpha up) and contained
+        # within the matrix (small bound) so it drifts in view. Use the
+        # `fade_out` event if you want a fade-to-black.
+        scene.set_state("alpha", 1.0)
+        scene.set_state("dot_bound", float(params.get("bound", 18.0)))
 
         # ── DOT MOTION ORCHESTRATION ──────────────────────────────
         # dot_orbit_lock — steering strength toward ring tangent.
@@ -283,8 +295,8 @@ class DissolveAction:
         #   t=0.85 → 1.5   (still going strong through random phase)
         #   t=1.0  → 0.7   (momentum carries them past the frame)
         speed_env = Envelope(points=[
-            (0.0, 1.0), (0.20, 1.0), (0.35, 1.8),
-            (0.85, 1.5), (1.0, 0.7),
+            (0.0, 1.0), (0.20, 1.0), (0.40, 1.4),
+            (0.75, 0.7), (1.0, 0.5),
         ], interp="linear")
         scene.add_modulator(Modulator(
             target="dot_speed", op="absolute",
@@ -294,35 +306,20 @@ class DissolveAction:
             tag="dissolve-speed",
         ))
 
-        # Phase 3: alpha fade, scheduled to start after disperse + float.
-        # Read alpha LIVE inside the callback (not closed-over at on() time)
-        # so the fade doesn't snap backwards if another event (Pulse, etc.)
-        # modified alpha during the disperse/float phases.
-        def _begin_fade(sc, dur=fade_dur, e=env):
-            live_alpha = float(sc.get_state("alpha", 1.0))
-            sc.add_modulator(Modulator(
-                target="alpha", op="absolute",
-                base_value=live_alpha, peak_value=0.0,
-                envelope=e, start_beat=sc.current_beat(),
-                duration_beats=dur,
-                tag="dissolve-fade",
-            ))
-        scene.schedule(disperse_dur + float_dur, _begin_fade,
-                       tag="dissolve-begin-fade")
-
-        # Pin alpha to 0 right before the fade mod completes; release
-        # the dispersal-radius lock; AND clear the particle simulation
-        # state so the tick loop stops advancing invisible particles
-        # forever after the dissolve finishes.
-        def _pin_dark(sc):
-            sc.set_state("alpha", 0.0)
+        # Settle into the floating-particles state at the end: pin orbit
+        # lock OFF and speed to a slow float so the cloud keeps drifting
+        # (the modulators expiring would otherwise snap these back to
+        # their captured baselines). No fade-to-empty.
+        float_speed = float(params.get("speed", 0.5))
+        def _pin_float(sc, sp=float_speed):
+            sc.set_state("dot_orbit_lock", 0.0)
+            sc.set_state("dot_speed", sp)
+            sc.set_state("dissolve_amount", 1.0)
+            sc.set_state("dot_visibility", 1.0)
+            sc.set_state("alpha", 1.0)
             sc.set_state("dissolve_radius_lock", 0.0)
-            sc.set_state("dissolve_amount", 0.0)
-            anim_inner = getattr(sc, "_animation", None)
-            if anim_inner is not None and hasattr(anim_inner, "clear_particles"):
-                anim_inner.clear_particles()
-        scene.schedule(disperse_dur + float_dur + fade_dur - 0.02, _pin_dark,
-                       tag="dissolve-pin-dark")
+        scene.schedule(max(0.0, total - 0.02), _pin_float,
+                       tag="dissolve-pin-float")
 
     def off(self, event, scene):
         pass
@@ -370,22 +367,28 @@ class RespawnAction:
         # respawn always plays its full "fade-in + gather" animation
         # regardless of where the scene was when triggered. Scrub aux
         # state at the same time — same intent as Regrow's aux scrub.
+        # If a floating cloud already exists, GATHER those particles (no
+        # re-spawn — re-spawning would teleport them to the edges and
+        # glitch). From empty/solid, seed fresh particles BEYOND the
+        # borders and fade them in.
+        anim = getattr(scene, "_animation", None)
+        have_particles = (
+            anim is not None
+            and getattr(anim, "_dots_xy", None) is not None
+            and float(scene.get_state("dissolve_amount", 0.0)) > 0.001
+        )
         scene.set_state("dissolve_amount", 1.0)
-        scene.set_state("alpha", 0.0)
-        # Lock dispersal-range radius to current radius so a
-        # Contract/Expand fired mid-respawn doesn't snap the cloud.
-        # Cleared on respawn-gather completion via _pin_amount.
+        scene.set_state("dot_bound", 0.0)   # release float containment
         lock_r = float(scene.get_state("radius", 0.0))
         if lock_r > 0:
             scene.set_state("dissolve_radius_lock", lock_r)
-
-        # Seed particles at the GRID EDGES — they fly inward (heading
-        # set in spawn_particles_random) as the respawn orchestration
-        # accelerates them and locks them onto the rings.
-        anim = getattr(scene, "_animation", None)
-        if anim is not None and hasattr(anim, "spawn_particles_random"):
-            grid = getattr(scene, "_grid", None)
-            anim.spawn_particles_random(scene.state, grid=grid)
+        if have_particles:
+            scene.set_state("alpha", 1.0)   # transform: stay visible
+        else:
+            scene.set_state("alpha", 0.0)
+            if anim is not None and hasattr(anim, "spawn_particles_random"):
+                anim.spawn_particles_random(scene.state,
+                                            grid=getattr(scene, "_grid", None))
 
         # Snap motion to "wandering, no coherence". Speed will be
         # derived from orbit_lock by the renderer — at lock=0 it
@@ -406,13 +409,14 @@ class RespawnAction:
             scene.set_state(f"oval_rotation_{_i}", 0.0)
             scene.set_state(f"oval_velocity_{_i}", 0.0)
 
-        scene.add_modulator(Modulator(
-            target="alpha", op="absolute",
-            base_value=0.0, peak_value=1.0,
-            envelope=env, start_beat=beat,
-            duration_beats=fade_in_dur,
-            tag="respawn-alpha",
-        ))
+        if not have_particles:
+            scene.add_modulator(Modulator(
+                target="alpha", op="absolute",
+                base_value=0.0, peak_value=1.0,
+                envelope=env, start_beat=beat,
+                duration_beats=fade_in_dur,
+                tag="respawn-alpha",
+            ))
         # dissolve_amount is just a "particles render" flag now (ring
         # opacity is dot_orbit_lock^3). Stays at 1 throughout respawn
         # so particles render the whole time. Pinned to 0 at the end
@@ -617,6 +621,191 @@ class PaletteAction:
         pass
 
 
+# ── New scene-state events (reset / fade / border / particles) ───────
+
+def _blank_live(scene, *, clear_ghost: bool) -> None:
+    """Wipe everything currently animating/rendered to a blank LIVE scene
+    (alpha 0, no particles, no border, motion stopped) without touching
+    the beat clock, palette, or oval config. Shared by reset_scene
+    (clear_ghost=True) and fade_out (clear_ghost=False — the captured
+    ghost keeps fading while the live scene goes blank)."""
+    scene.clear_all_dynamic()
+    try:
+        scene.physics.reset()
+        scene.physics.set_center_lock(False)
+    except AttributeError:
+        pass
+    try:
+        scene.clear_torques()
+    except AttributeError:
+        pass
+    anim = getattr(scene, "_animation", None)
+    if anim is not None and hasattr(anim, "clear_particles"):
+        anim.clear_particles()
+    for i in range(3):
+        scene.set_state(f"oval_velocity_{i}", 0.0)
+        scene.set_state(f"oval_rotation_{i}", 0.0)
+    for key, val in (("alpha", 0.0), ("radius", 0.0), ("dot_orbit_lock", 0.0),
+                     ("dissolve_amount", 0.0), ("dissolve_radius_lock", 0.0),
+                     ("dot_bound", 0.0), ("shimmer_amount", 0.0),
+                     ("border_glow_amount", 0.0), ("border_rotation", 0.0),
+                     ("pulse", 0.0)):
+        scene.set_state(key, val)
+    if clear_ghost:
+        scene.set_state("fade_ghost_amount", 0.0)
+        if anim is not None and hasattr(anim, "clear_ghost"):
+            anim.clear_ghost()
+
+
+def _fade_in(scene, target: str, *, peak: float, dur: float, tag: str,
+             ease: str = "ease_in_out") -> None:
+    """Ramp `target` 0→peak then pin it — the standard 'introduce a new
+    object by fading it in' helper. Uses ease_in_out (slow start) so the
+    object genuinely fades up rather than snapping to ~60% instantly the
+    way ease_out's fast attack does."""
+    env = _envelope_ease(scene, ease)
+    beat = scene.current_beat()
+    try:
+        scene.clear_modulators_by_tag_prefix(tag)
+        scene.clear_scheduled_by_tag_prefix(tag)
+    except AttributeError:
+        pass
+    scene.add_modulator(Modulator(
+        target=target, op="absolute", base_value=0.0, peak_value=peak,
+        envelope=env, start_beat=beat, duration_beats=max(0.1, dur), tag=tag))
+    scene.schedule(max(0.0, dur - 0.02),
+                   lambda sc, t=target, p=peak: sc.set_state(t, p),
+                   tag=tag + "-pin")
+
+
+class ResetAction:
+    """Clear the scene to a blank canvas — stops all motion, drops
+    particles/sfx/torques, fades nothing (instant), ends at alpha=0."""
+    def on(self, event, scene):
+        _blank_live(scene, clear_ghost=True)
+
+    def off(self, event, scene):
+        pass
+
+
+class FadeOutAction:
+    """Fade whatever is currently rendered out to black via a snapshot
+    'ghost' layer, while the live scene is blanked immediately — so a
+    follow-up appearance event (regrow, border, …) brings NEW objects in
+    simultaneously and only the pre-fade content disappears."""
+    def on(self, event, scene):
+        params = event.get("params") or {}
+        dur = float(params.get("duration_beats", 2.0))
+        env = _envelope_ease(scene, str(params.get("ease", "ease_out")))
+        beat = scene.current_beat()
+        anim = getattr(scene, "_animation", None)
+        if anim is not None and hasattr(anim, "capture_ghost"):
+            anim.capture_ghost()
+        _blank_live(scene, clear_ghost=False)
+        scene.set_state("fade_ghost_amount", 1.0)
+        scene.add_modulator(Modulator(
+            target="fade_ghost_amount", op="absolute",
+            base_value=1.0, peak_value=0.0, envelope=env,
+            start_beat=beat, duration_beats=max(0.1, dur), tag="fadeout"))
+
+        def _end(sc):
+            sc.set_state("fade_ghost_amount", 0.0)
+            a = getattr(sc, "_animation", None)
+            if a is not None and hasattr(a, "clear_ghost"):
+                a.clear_ghost()
+        scene.schedule(max(0.0, dur - 0.02), _end, tag="fadeout-end")
+
+    def off(self, event, scene):
+        pass
+
+
+class BorderGlowAction:
+    """Introduce the glowing-border state — always fades in (it's a new
+    object, not a transform). Border colour/brightness live in render();
+    this just ramps border_glow_amount 0→1."""
+    def on(self, event, scene):
+        params = event.get("params") or {}
+        dur = float(params.get("duration_beats", 1.5))
+        _fade_in(scene, "border_glow_amount", peak=1.0, dur=dur, tag="border-in")
+
+    def off(self, event, scene):
+        pass
+
+
+class DissolveBorderAction:
+    """Dissolve the glowing border away — fades border_glow_amount to 0
+    over the duration so the edge gradient recedes/dims out (the inverse
+    of border_glow's fade-in)."""
+    def on(self, event, scene):
+        params = event.get("params") or {}
+        dur = float(params.get("duration_beats", 2.0))
+        env = _envelope_ease(scene, "ease_out")
+        beat = scene.current_beat()
+        cur = float(scene.get_state("border_glow_amount", 0.0))
+        try:
+            scene.clear_modulators_by_tag_prefix("border-")
+            scene.clear_scheduled_by_tag_prefix("border-")
+        except AttributeError:
+            pass
+        scene.add_modulator(Modulator(
+            target="border_glow_amount", op="absolute",
+            base_value=cur, peak_value=0.0, envelope=env,
+            start_beat=beat, duration_beats=max(0.1, dur), tag="border-out"))
+        scene.schedule(max(0.0, dur - 0.02),
+                       lambda sc: sc.set_state("border_glow_amount", 0.0),
+                       tag="border-out-pin")
+
+    def off(self, event, scene):
+        pass
+
+
+class FloatingParticlesAction:
+    """Slow, free-drifting particle cloud contained within the matrix.
+    If particles already exist (transforming from a dissolve) keep them
+    and just settle into the float — no fade-in. From an empty canvas,
+    introduce particles from BEYOND the borders and fade them in."""
+    def on(self, event, scene):
+        params = event.get("params") or {}
+        beat = scene.current_beat()
+        _scrub_dissolve_lifecycle(scene)
+        try:
+            scene.clear_modulators_by_tag_prefix("float-")
+            scene.clear_scheduled_by_tag_prefix("float-")
+        except AttributeError:
+            pass
+        anim = getattr(scene, "_animation", None)
+        have_particles = (
+            anim is not None
+            and getattr(anim, "_dots_xy", None) is not None
+            and float(scene.get_state("dissolve_amount", 0.0)) > 0.001
+        )
+        scene.set_state("dissolve_amount", 1.0)
+        scene.set_state("dot_orbit_lock", 0.0)   # free wander
+        scene.set_state("dot_speed", float(params.get("speed", 0.5)))
+        scene.set_state("dot_bound", float(params.get("bound", 18.0)))
+        scene.set_state("dissolve_radius_lock", 0.0)
+        scene.set_state("alpha", 1.0)
+        if have_particles:
+            scene.set_state("dot_visibility", 1.0)   # transform: no fade-in
+        else:
+            if anim is not None and hasattr(anim, "spawn_particles_random"):
+                anim.spawn_particles_random(scene.state,
+                                            grid=getattr(scene, "_grid", None))
+            scene.set_state("dot_visibility", 0.0)   # introduce: fade in
+            dur = float(params.get("duration_beats", 2.0))
+            env = _envelope_ease(scene, "ease_out")
+            scene.add_modulator(Modulator(
+                target="dot_visibility", op="absolute",
+                base_value=0.0, peak_value=1.0, envelope=env,
+                start_beat=beat, duration_beats=max(0.1, dur), tag="float-vis"))
+            scene.schedule(max(0.0, dur - 0.02),
+                           lambda sc: sc.set_state("dot_visibility", 1.0),
+                           tag="float-vis-pin")
+
+    def off(self, event, scene):
+        pass
+
+
 # ── Builder ──────────────────────────────────────────────────────────
 
 def register_default_events(router: EventRouter, scene) -> None:
@@ -673,6 +862,17 @@ def register_default_events(router: EventRouter, scene) -> None:
             tag="pulse-radius",
             ease="pulse",
         ),
+        # Dedicated additive "pulse" channel so layers NOT gated by alpha
+        # (the border glow) still flash on a Pulse. Baseline 0.
+        ModulatorAction(
+            target="pulse", op="additive",
+            peak_value=1.0,
+            duration_beats=0.5,
+            curve_id="pulse_default",
+            release_curve_id=None,
+            tag="pulse-glow",
+            ease="pulse",
+        ),
     ]))
 
     # Shimmer: sustains a voice-vibration wobble on the rings while
@@ -685,7 +885,7 @@ def register_default_events(router: EventRouter, scene) -> None:
             target="shimmer_amount", op="absolute",
             peak_value=1.0,
             duration_beats=0.15,        # quick attack
-            release_beats=0.25,         # short decay on note_off
+            release_beats=2.0,          # gentle ~1s decay on note_off (@120bpm)
             curve_id="transition_default",
             release_curve_id="release_default",
             tag="shimmer",
@@ -786,14 +986,9 @@ def register_default_events(router: EventRouter, scene) -> None:
     for i, label in oval_labels_back_compat.items():
         router.register(f"stop_rotation_{label}", _make_stop((i,)))
 
-    # Push impulses — each note_on adds a velocity impulse to the ball.
-    # All push events go through the same physics.impulse() path so
-    # they're consistent (same speed/jitter knobs apply).
-    router.register("push_left",  ImpulseAction(dx=-1.0, dy=0.0))
-    router.register("push_right", ImpulseAction(dx=+1.0, dy=0.0))
-    router.register("push_up",    ImpulseAction(dx=0.0, dy=-1.0))   # screen-up = -y
-    router.register("push_down",  ImpulseAction(dx=0.0, dy=+1.0))
-    # Pull center: smooth duration-bounded pull to (0, 0). The ball
+    # Directional pushes (push_left/right/up/down) were removed — only
+    # Push Random + Pull Center remain. Pull center: smooth duration-
+    # bounded pull to (0, 0). The ball
     # GUARANTEES it lands at exact origin after the configured beats.
     router.register("pull_center", PullCenterAction())
     # Push random: each note_on picks a fresh random direction.
@@ -865,10 +1060,6 @@ def register_default_events(router: EventRouter, scene) -> None:
     # log a one-shot deprecation warning per name so the user knows to
     # update to the canonical push_* / pull_center spelling.
     _DEPRECATED_ALIASES = {
-        "float_left":   ("push_left",   ImpulseAction(dx=-1.0, dy=0.0)),
-        "float_right":  ("push_right",  ImpulseAction(dx=+1.0, dy=0.0)),
-        "float_up":     ("push_up",     ImpulseAction(dx=0.0, dy=-1.0)),
-        "float_down":   ("push_down",   ImpulseAction(dx=0.0, dy=+1.0)),
         "float_center": ("pull_center", PullCenterAction()),
         "push_center":  ("pull_center", PullCenterAction()),
     }
@@ -895,6 +1086,13 @@ def register_default_events(router: EventRouter, scene) -> None:
     router.register("dissolve", DissolveAction())
     router.register("respawn",  RespawnAction())
 
+    # New scene-state events.
+    router.register("reset_scene",        ResetAction())
+    router.register("fade_out",           FadeOutAction())
+    router.register("border_glow",        BorderGlowAction())
+    router.register("dissolve_border",    DissolveBorderAction())
+    router.register("floating_particles", FloatingParticlesAction())
+
 
 # Convenience export — list every event the catalog knows about.
 def catalog_event_names() -> list[str]:
@@ -906,8 +1104,8 @@ def catalog_event_names() -> list[str]:
         "rotate_cw_inner", "rotate_ccw_inner",
         "stop_rotation", "stop_rotation_outer",
         "stop_rotation_middle", "stop_rotation_inner",
-        "push_left", "push_right", "push_up", "push_down", "pull_center",
-        "push_random",
+        "pull_center", "push_random",
+        "reset_scene", "fade_out", "border_glow", "floating_particles",
         "color_palette", "dissolve", "respawn", "shimmer",
         "show_outer", "hide_outer",
         "show_middle", "hide_middle",

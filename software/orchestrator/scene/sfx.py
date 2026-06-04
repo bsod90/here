@@ -259,7 +259,7 @@ class DustPulseSfx(_SfxBase):
 @dataclass
 class FlashSfx(_SfxBase):
     """Full-screen flash of the chosen color, ease-curve-shaped alpha."""
-    peak_alpha: float = 1.0
+    peak_alpha: float = 0.8   # cap flash top brightness at 80%
 
     def tick(self, dt_seconds, beat, grid):
         pass

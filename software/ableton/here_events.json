@@ -103,29 +103,29 @@
     {
       "index": 13,
       "pitch": 49,
-      "label": "Push L",
-      "event": "push_left",
+      "label": "Reset",
+      "event": "reset_scene",
       "params": {}
     },
     {
       "index": 14,
       "pitch": 50,
-      "label": "Push R",
-      "event": "push_right",
+      "label": "Fade Out",
+      "event": "fade_out",
       "params": {}
     },
     {
       "index": 15,
       "pitch": 51,
-      "label": "Push U",
-      "event": "push_up",
+      "label": "Border",
+      "event": "border_glow",
       "params": {}
     },
     {
       "index": 16,
       "pitch": 52,
-      "label": "Push D",
-      "event": "push_down",
+      "label": "Particles",
+      "event": "floating_particles",
       "params": {}
     },
     {
@@ -287,6 +287,13 @@
       "pitch": 75,
       "label": "Shimmer",
       "event": "shimmer",
+      "params": {}
+    },
+    {
+      "index": 40,
+      "pitch": 76,
+      "label": "Dissolve Border",
+      "event": "dissolve_border",
       "params": {}
     }
   ]

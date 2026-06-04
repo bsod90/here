@@ -80,13 +80,25 @@ if [ -d "${OLD_LINK_DIR}" ] && [ -z "$(ls -A "${OLD_LINK_DIR}")" ]; then
 fi
 
 # Install the new device.
+#
+# We COPY rather than symlink. Live's browser indexes real files in the
+# User Library reliably; symlinked *files* are flaky — they often don't
+# appear until a full rescan/restart (which is why the HERE folder showed
+# up empty). The repo stays the source of truth; `./setup.sh rebuild`
+# regenerates the .amxd and re-copies it, and Live reloads the device when
+# the file on disk changes — same iteration loop, just always via setup.sh.
 mkdir -p "${USER_LIB_DIR}"
 if [ -L "${LINK_PATH}" ] || [ -e "${LINK_PATH}" ]; then
   rm "${LINK_PATH}"
 fi
-ln -s "$(pwd)/${REPO_AMXD}" "${LINK_PATH}"
-echo "✓ linked ${LINK_PATH}"
-echo "  → $(readlink "${LINK_PATH}")"
+cp "$(pwd)/${REPO_AMXD}" "${LINK_PATH}"
+echo "✓ installed ${LINK_PATH}"
+echo "  → copy of $(pwd)/${REPO_AMXD} ($(wc -c < "${LINK_PATH}") bytes)"
+# The `v8` object loads here.js as a SEPARATE file, resolved from the
+# device's own folder first. Without this, Max falls back to a stale
+# here.js from its search path / cache (→ "no function note/palette").
+cp "$(pwd)/here.js" "${USER_LIB_DIR}/here.js"
+echo "✓ installed here.js alongside the device"
 
 cat <<EOF
 

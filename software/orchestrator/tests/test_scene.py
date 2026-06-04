@@ -256,12 +256,11 @@ class TestEventCatalogPresent(unittest.TestCase):
             # Canonical names
             "expand", "contract", "pulse", "blow_out", "regrow",
             "rotate_cw", "rotate_ccw",
-            "push_left", "push_right", "push_up", "push_down",
             "pull_center", "push_random",
             "color_palette", "dissolve", "respawn",
+            "reset_scene", "fade_out", "border_glow", "floating_particles",
             "meteors", "dust", "flash", "wipe",
             # Deprecated but kept for back-compat (warn on first use).
-            "float_left", "float_right", "float_up", "float_down",
             "float_center", "push_center",
         ):
             self.assertIn(name, events)
