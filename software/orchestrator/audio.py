@@ -28,7 +28,9 @@ Public API (unchanged, so callers don't change):
 from __future__ import annotations
 
 import logging
+import os
 import queue
+import signal
 import subprocess
 import threading
 from pathlib import Path
@@ -279,8 +281,18 @@ class AudioPlayer:
             self._stop_encoder()
 
     def _start_encoder(self) -> None:
-        if self._enc_proc is not None and self._enc_proc.poll() is None:
+        # Reuse only a fully-healthy encoder (proc alive AND its pump thread
+        # still reading). A stale/half-dead encoder would deliver zero bytes
+        # to a new listener (browser play() then rejects → "blocked"), so
+        # always tear it down and start fresh in that case.
+        healthy = (self._enc_proc is not None
+                   and self._enc_proc.poll() is None
+                   and self._enc_reader is not None
+                   and self._enc_reader.is_alive())
+        if healthy:
             return
+        if self._enc_proc is not None:
+            self._stop_encoder()
         # Drain stale PCM so the new listener starts near real-time.
         try:
             while True:
@@ -292,9 +304,11 @@ class AudioPlayer:
                "-c:a", "libmp3lame", "-b:a", "128k", "-flush_packets", "1",
                "-f", "mp3", "pipe:1"]
         try:
+            # New session so we can kill the whole group (and it dies with
+            # the service's cgroup), preventing orphaned encoders.
             self._enc_proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL)
+                stderr=subprocess.DEVNULL, start_new_session=True)
         except Exception:
             logger.exception("audio: failed to start monitor encoder")
             self._enc_proc = None
@@ -317,14 +331,24 @@ class AudioPlayer:
                     proc.stdin.close()
             except Exception:
                 pass
+            # Kill the whole process group so ffmpeg can't orphan.
             try:
-                proc.terminate()
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except Exception:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
                 proc.wait(timeout=1.5)
             except Exception:
                 try:
-                    proc.kill()
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         self._broadcast(None)
 
     def _encoder_feed(self, proc: subprocess.Popen) -> None:

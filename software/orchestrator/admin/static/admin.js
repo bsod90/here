@@ -180,7 +180,14 @@ if (_wledReload) _wledReload.onclick = () => {
       await connect();
       setStatus('live');
     } catch (e) {
-      stopAudio('blocked — tap again');
+      // Only a genuine autoplay block needs another tap; anything else
+      // (slow first bytes, a transient stream hiccup) should retry rather
+      // than dead-end at "blocked".
+      if (e && e.name === 'NotAllowedError') {
+        stopAudio('tap again to allow audio');
+      } else {
+        scheduleReconnect('starting');
+      }
     }
   }
   btn.onclick = () => { on ? stopAudio('') : startAudio(); };
