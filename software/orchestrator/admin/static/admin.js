@@ -2,6 +2,14 @@
 
 let config = {};
 
+// WLED tab status-poll handle. Declared up here (not by the WLED block
+// below) because _activateTab — which runs during the synchronous
+// hash-honoring block at the bottom of this file — calls openWled/
+// closeWled, which read this. A `let` declared later would be in its
+// temporal dead zone at that point and throw, aborting the rest of
+// script evaluation (including the mode-button handler binding).
+let _wledStatusTimer = null;
+
 // ── Tabs ───────────────────────────────────────────────────
 function _activateTab(id) {
   document.querySelectorAll('.tab').forEach(b =>
@@ -16,6 +24,8 @@ function _activateTab(id) {
   }
   if (id === 'sim') openSimulator();
   else closeSimulator();
+  if (id === 'wled') openWled();
+  else closeWled();
   // MIDI tab: when becoming visible, run the auto-fit zoom. The
   // init-time fit bails when the tab is display:none (clientWidth=0).
   // CRITICAL: reference `_pianoRoll` only INSIDE the rAF callback —
@@ -65,6 +75,46 @@ document.getElementById('sim-reload').onclick = () => {
 };
 // (Leaving the sim tab is handled in _activateTab.)
 
+// ── WLED native UI (re-served through the Pi at /wled/) ────────────
+// Lazy-load the iframe so the WLED WebSocket only connects while the
+// tab is open. A small status poll reminds the user whether the Pi or
+// WLED is currently driving the LEDs (mode === 'wled' ⇒ WLED).
+// (_wledStatusTimer is declared at the top of this file — see note there.)
+function openWled() {
+  const f = document.getElementById('wled-iframe');
+  if (f && (!f.src || f.src === 'about:blank')) f.src = '/wled/';
+  if (!_wledStatusTimer) {
+    updateWledStatus();
+    _wledStatusTimer = setInterval(updateWledStatus, 2000);
+  }
+}
+function closeWled() {
+  const f = document.getElementById('wled-iframe');
+  if (f) f.src = 'about:blank';   // drop the proxied WS when hidden
+  if (_wledStatusTimer) { clearInterval(_wledStatusTimer); _wledStatusTimer = null; }
+}
+async function updateWledStatus() {
+  const el = document.getElementById('wled-status');
+  if (!el) return;
+  try {
+    const s = await api('status');
+    if (s.mode === 'wled') {
+      el.innerHTML = '✅ WLED is driving the LEDs — pick any effect below.';
+      el.style.color = 'var(--ok, #4caf50)';
+    } else {
+      el.innerHTML = '⚠️ The Pi is currently driving the LEDs (mode: <b>' +
+        s.mode + '</b>). Click <b>Use WLED effects</b> to hand over — ' +
+        'WLED effects won’t show until you do.';
+      el.style.color = '';
+    }
+  } catch { /* leave last message */ }
+}
+const _wledReload = document.getElementById('wled-reload');
+if (_wledReload) _wledReload.onclick = () => {
+  const f = document.getElementById('wled-iframe');
+  f.src = '/wled/?t=' + Date.now();
+};
+
 // ── Monitor audio (live tap of the bench speaker stream) ──────
 // Off by default. One press opens /api/audio/monitor.mp3 — a never-
 // ending MP3 of the post-volume/mix engine output — into a hidden
@@ -76,6 +126,8 @@ document.getElementById('sim-reload').onclick = () => {
   const el = document.getElementById('sim-audio');
   const statusEl = document.getElementById('sim-audio-status');
   let on = false;
+  let reconnectTimer = null;
+  let lastConnect = 0;
   const setStatus = t => { if (statusEl) statusEl.textContent = t || ''; };
   const paint = () => {
     btn.textContent = on ? '🔊 Monitor audio' : '🔇 Monitor audio';
@@ -83,30 +135,61 @@ document.getElementById('sim-reload').onclick = () => {
   };
   function stopAudio(msg) {
     on = false;
+    clearTimeout(reconnectTimer); reconnectTimer = null;
     el.pause();
     el.removeAttribute('src');
     el.load();           // drop the HTTP connection so the engine isn't fed a dead reader
     setStatus(msg);
     paint();
   }
+  // Open (or re-open) the live stream. cache-bust so we always get a fresh,
+  // frame-aligned stream rather than a closed/mid-frame one.
+  function connect() {
+    lastConnect = Date.now();
+    el.src = '/api/audio/monitor.mp3?t=' + Date.now();
+    return el.play();
+  }
+  // A live MP3 over <audio> can hiccup (the browser buffers ahead, the
+  // socket backpressures, and the server drops chunks to keep the speaker
+  // branch flowing — which splits an MP3 frame and trips a decode error).
+  // Instead of giving up, reconnect — unless the Pi's engine is actually
+  // off (then it's an intentional stop, so don't loop).
+  function scheduleReconnect(reason) {
+    if (!on || reconnectTimer) return;
+    setStatus(reason + ' — reconnecting…');
+    // Back off a little if we *just* connected, so a genuinely-off engine
+    // doesn't spin; otherwise recover fast.
+    const delay = (Date.now() - lastConnect < 3000) ? 1500 : 300;
+    reconnectTimer = setTimeout(async () => {
+      reconnectTimer = null;
+      if (!on) return;
+      try {
+        const s = await api('audio');
+        if (!s || !s.running) { stopAudio('no audio playing'); return; }
+      } catch { /* network blip — try the stream anyway */ }
+      if (!on) return;
+      connect().then(() => setStatus('live'))
+               .catch(() => scheduleReconnect('stalled'));
+    }, delay);
+  }
   async function startAudio() {
     on = true;
     paint();
     setStatus('connecting…');
-    // cache-bust so we always get a fresh stream, never a closed one.
-    el.src = '/api/audio/monitor.mp3?t=' + Date.now();
     try {
-      await el.play();
+      await connect();
       setStatus('live');
     } catch (e) {
       stopAudio('blocked — tap again');
     }
   }
   btn.onclick = () => { on ? stopAudio('') : startAudio(); };
-  // The stream ends (None sentinel) when the backdrop is switched off on
-  // the Pi; reflect that instead of leaving a dead 🔊.
-  el.addEventListener('ended', () => stopAudio('stream ended'));
-  el.addEventListener('error', () => { if (on) stopAudio('no audio playing'); });
+  // 'ended'/'error'/'stalled' on a live stream → try to recover rather
+  // than dying. The running-check inside scheduleReconnect handles the
+  // case where the Pi backdrop was actually switched off.
+  el.addEventListener('ended',   () => scheduleReconnect('stream ended'));
+  el.addEventListener('error',   () => scheduleReconnect('audio error'));
+  el.addEventListener('stalled', () => scheduleReconnect('stalled'));
   el.addEventListener('playing', () => { if (on) setStatus('live'); });
 }
 
@@ -320,6 +403,10 @@ const FIREPLACE_SLIDERS = [
   { key: 'core_radius',         label: 'Core Radius',         min: 1,    max: 12,   step: 0.2 },
   { key: 'outer_radius',        label: 'Body Radius',         min: 4,    max: 18,   step: 0.2 },
   { key: 'brightness',          label: 'Brightness',          min: 0,    max: 1.5,  step: 0.05 },
+  { key: 'shimmer_amount',      label: 'Shimmer (grain)',     min: 0,    max: 0.8,  step: 0.02 },
+  { key: 'shimmer_speed',       label: 'Shimmer Speed',       min: 0.1,  max: 3,    step: 0.05 },
+  { key: 'pulse_amp',           label: 'Breath Depth',        min: 0,    max: 0.4,  step: 0.01 },
+  { key: 'pulse_period_s',      label: 'Breath Period (s)',   min: 2,    max: 20,   step: 0.5 },
   { key: 'turb_amp',            label: 'Turbulence Amount',   min: 0,    max: 0.5,  step: 0.01 },
   { key: 'turb_speed',          label: 'Turbulence Speed',    min: 0.1,  max: 3,    step: 0.05 },
   { key: 'flicker_amp',         label: 'Flicker Amount',      min: 0,    max: 0.2,  step: 0.005 },
@@ -859,86 +946,100 @@ function bindScaleControls() {
   };
 }
 
-// ── Audio (backdrop loop + volume) ─────────────────────────
-// Mirrors the scale pattern: refresh paints state from the backend
-// snapshot, bind wires the user controls to a PUT /api/audio. State
-// is persisted server-side so the toggle survives a restart.
-let _audioVolLastEdit = 0;
+// ── Audio (per-track ambience loops + volume) ──────────────
+// One block per track (ocean, fireplace, …) built from GET /api/audio.
+// Each block has On/Off + a live volume slider that PUTs {track,…}. State
+// is persisted server-side so toggles survive a restart.
+let _audioBuilt = false;
+const _audioVolLastEdit = {};   // per-track: ms of last slider edit
+
+function _buildAudioTrackRow(name, tr) {
+  const row = document.createElement('div');
+  row.className = 'audio-track';
+  row.dataset.track = name;
+  row.innerHTML =
+    `<div class="row-line">
+       <label class="dim">${tr.label || name}</label>
+       <button class="mode-btn at-on"  data-val="true">On</button>
+       <button class="mode-btn at-off" data-val="false">Off</button>
+       <span class="dim tiny at-status"></span>
+     </div>
+     <div class="row-line">
+       <label class="dim">Volume</label>
+       <input type="range" class="at-vol" min="0" max="100" step="1" style="flex:1;">
+       <span class="dim tiny at-vol-val" style="min-width:38px; text-align:right;">—</span>
+     </div>`;
+
+  const put = (patch) =>
+    api('audio', { method: 'PUT',
+                   body: JSON.stringify({ track: name, ...patch }) })
+      .catch(() => {});
+
+  row.querySelector('.at-on').onclick  = async () => { await put({ enabled: true });  refreshAudio(); };
+  row.querySelector('.at-off').onclick = async () => { await put({ enabled: false }); refreshAudio(); };
+
+  // Live volume while dragging: throttle to ~8/sec + a final send on release.
+  // Deliberately doesn't refreshAudio() per step (would snap the slider).
+  const slider = row.querySelector('.at-vol');
+  const valLabel = row.querySelector('.at-vol-val');
+  let lastSent = 0, trailing = null;
+  const sendVol = () => {
+    lastSent = Date.now();
+    const pct = parseInt(slider.value, 10);
+    if (Number.isFinite(pct)) put({ volume: pct / 100 });
+  };
+  slider.addEventListener('input', () => {
+    _audioVolLastEdit[name] = Date.now();
+    valLabel.textContent = `${slider.value}%`;
+    const wait = 120 - (Date.now() - lastSent);
+    if (wait <= 0) { clearTimeout(trailing); trailing = null; sendVol(); }
+    else if (!trailing) trailing = setTimeout(() => { trailing = null; sendVol(); }, wait);
+  });
+  slider.addEventListener('change', () => {
+    clearTimeout(trailing); trailing = null; sendVol();
+  });
+  return row;
+}
+
+function _updateAudioTrackRow(name, tr, running) {
+  const row = document.querySelector(`.audio-track[data-track="${name}"]`);
+  if (!row) return;
+  row.querySelector('.at-on').classList.toggle('active', tr.enabled === true);
+  row.querySelector('.at-off').classList.toggle('active', tr.enabled === false);
+  const slider = row.querySelector('.at-vol');
+  const valLabel = row.querySelector('.at-vol-val');
+  if (typeof tr.volume === 'number') {
+    const pct = Math.round(tr.volume * 100);
+    if (slider !== document.activeElement
+        && Date.now() - (_audioVolLastEdit[name] || 0) > 1000) {
+      slider.value = pct;
+    }
+    valLabel.textContent = `${pct}%`;
+  }
+  const status = row.querySelector('.at-status');
+  if (tr.enabled && !tr.present)      status.textContent = `⚠ ${tr.file} missing on Pi`;
+  else if (tr.enabled && !running)    status.textContent = '⚠ player not running';
+  else                                status.textContent = '';
+}
+
 async function refreshAudio() {
   let s;
   try { s = await api('audio'); } catch { return; }
-  if (!s || s.error) return;
-  refreshToggle('.audio-backdrop-btn',
-                typeof s.backdrop_enabled === 'boolean' ? s.backdrop_enabled : null);
-  // Slider value — skip while user is dragging it (focus check pattern).
-  const slider = document.getElementById('audio-vol');
-  const valLabel = document.getElementById('audio-vol-val');
-  if (typeof s.backdrop_volume === 'number') {
-    const pct = Math.round(s.backdrop_volume * 100);
-    if (slider && slider !== document.activeElement
-        && Date.now() - _audioVolLastEdit > 1000) {
-      slider.value = pct;
-    }
-    if (valLabel) valLabel.textContent = `${pct}%`;
+  if (!s || s.error || !s.tracks) return;
+  const wrap = document.getElementById('audio-tracks');
+  if (!wrap) return;
+  if (!_audioBuilt) {
+    wrap.innerHTML = '';
+    for (const [name, tr] of Object.entries(s.tracks))
+      wrap.appendChild(_buildAudioTrackRow(name, tr));
+    _audioBuilt = true;
   }
-  // Status text — let the user know if ffplay isn't actually running
-  // (e.g., media file missing or ffplay crashed) so a toggled-On
-  // button without sound isn't a mystery.
-  const status = document.getElementById('audio-backdrop-status');
-  if (status) {
-    if (s.backdrop_enabled && !s.backdrop_present) {
-      status.textContent = `⚠ ${s.backdrop_file} missing on Pi`;
-    } else if (s.backdrop_enabled && !s.running) {
-      status.textContent = '⚠ player not running';
-    } else {
-      status.textContent = '';
-    }
-  }
+  for (const [name, tr] of Object.entries(s.tracks))
+    _updateAudioTrackRow(name, tr, s.running);
 }
 
-function bindAudioControls() {
-  async function push(patch) {
-    try { await api('audio', { method: 'PUT', body: JSON.stringify(patch) }); }
-    catch {}
-    refreshAudio();
-  }
-  bindToggle('.audio-backdrop-btn',
-             v => push({ backdrop_enabled: v === 'true' }));
-  const slider = document.getElementById('audio-vol');
-  if (slider) {
-    const valLabel = document.getElementById('audio-vol-val');
-    // The backend now changes volume live via the ALSA mixer (no restart,
-    // no glitch), so we can stream updates while dragging for a smooth
-    // feel. Throttle PUTs to ~8/sec and fire a final one on release so the
-    // exact resting value lands. These volume PUTs deliberately don't call
-    // refreshAudio() — re-GETing on every step would be wasteful and could
-    // snap the slider mid-drag.
-    let lastSent = 0, trailing = null;
-    const sendVol = () => {
-      lastSent = Date.now();
-      const pct = parseInt(slider.value, 10);
-      if (Number.isFinite(pct)) {
-        api('audio', { method: 'PUT',
-                       body: JSON.stringify({ backdrop_volume: pct / 100 }) })
-          .catch(() => {});
-      }
-    };
-    slider.addEventListener('input', () => {
-      _audioVolLastEdit = Date.now();
-      if (valLabel) valLabel.textContent = `${slider.value}%`;
-      const wait = 120 - (Date.now() - lastSent);
-      if (wait <= 0) { clearTimeout(trailing); trailing = null; sendVol(); }
-      else if (!trailing) {
-        trailing = setTimeout(() => { trailing = null; sendVol(); }, wait);
-      }
-    });
-    // Guarantee the final resting value is sent even if it fell inside a
-    // throttle window.
-    slider.addEventListener('change', () => {
-      clearTimeout(trailing); trailing = null; sendVol();
-    });
-  }
-}
+// Rows wire their own controls on build; kept for the init call site.
+function bindAudioControls() {}
 
 // Preview-phase dropdown for the breathing session. Persists to
 // breathing.session.preview_phase via PUT /api/config; the engine
@@ -3371,3 +3472,256 @@ async function init() {
 }
 
 init();
+
+// ════════════════════════════════════════════════════════════════
+// Nadia's Playground — isolated tab (see docs/nadia_playground.md).
+// Self-contained: own state, own /api/playground calls, hooks the tab
+// without touching shared code. A lean SECONDS-based timeline.
+// ════════════════════════════════════════════════════════════════
+(function () {
+  const LABEL_W = 92, RULER_H = 22, ROW_H = 30, RESIZE = 6;
+  const COLORS = ['#7a5cff', '#28c8c8', '#e632b4', '#ff7a3c', '#5cff8a', '#ffd24a'];
+  const pg = {
+    snap: null, lanes: [], timeline: [],
+    canvas: null, ctx: null, wired: false,
+    totalSec: 60, drag: null,
+    playing: false, playStartMs: 0,
+  };
+
+  async function pgPost(path, body) {
+    try {
+      return await api('playground' + path, {
+        method: 'POST',
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch { return null; }
+  }
+  async function pgRefresh() {
+    let s;
+    try { s = await api('playground'); } catch { return; }
+    if (!s || s.error) return;
+    pg.snap = s; pg.lanes = s.animations || []; pg.timeline = s.timeline || [];
+    pg.playing = !!s.playing;
+    renderTriggerButtons();
+    renderRecording();
+    sizeCanvas(); drawTimeline();
+    // Ocean state from the shared audio snapshot.
+    try {
+      const a = await api('audio');
+      refreshToggle('.pg-ocean-btn',
+        (a && typeof a.backdrop_enabled === 'boolean') ? a.backdrop_enabled : null);
+    } catch {}
+  }
+
+  function renderTriggerButtons() {
+    const wrap = document.getElementById('pg-anim-buttons');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    pg.lanes.forEach(a => {
+      const b = document.createElement('button');
+      b.className = 'mode-btn';
+      b.textContent = a.label;
+      b.classList.toggle('active', !pg.playing && pg.snap && pg.snap.current === a.id);
+      b.onclick = async () => { await pgPost('/trigger/' + a.id); pgRefresh(); };
+      wrap.appendChild(b);
+    });
+  }
+
+  function renderRecording() {
+    const st = document.getElementById('pg-rec-status');
+    if (st) st.textContent = pg.snap && pg.snap.recording_file
+      ? `loaded: ${pg.snap.recording_file}` : 'no recording uploaded';
+  }
+
+  // ── Timeline canvas ──────────────────────────────────────────
+  function sizeCanvas() {
+    const c = pg.canvas, wrap = document.getElementById('pg-timeline-wrap');
+    if (!c || !wrap) return;
+    const w = Math.max(320, wrap.clientWidth - 2);
+    const h = RULER_H + Math.max(1, pg.lanes.length) * ROW_H + 4;
+    c.width = w; c.height = h; c.style.width = w + 'px'; c.style.height = h + 'px';
+  }
+  const pxPerSec = () => (pg.canvas.width - LABEL_W) / pg.totalSec;
+  const secToX = s => LABEL_W + s * pxPerSec();
+  const xToSec = x => Math.max(0, (x - LABEL_W) / pxPerSec());
+  const laneAtY = y => Math.floor((y - RULER_H) / ROW_H);
+  const laneTop = i => RULER_H + i * ROW_H;
+
+  function drawTimeline() {
+    const c = pg.canvas, ctx = pg.ctx;
+    if (!c || !ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#15151c'; ctx.fillRect(0, 0, c.width, c.height);
+    // Ruler ticks (every 5s, label every 10s).
+    ctx.fillStyle = '#2a2a34'; ctx.fillRect(LABEL_W, 0, c.width - LABEL_W, RULER_H);
+    ctx.font = '9px Arial'; ctx.textBaseline = 'middle';
+    for (let s = 0; s <= pg.totalSec; s += 5) {
+      const x = secToX(s);
+      ctx.strokeStyle = (s % 10 === 0) ? '#444' : '#2e2e38';
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
+      if (s % 10 === 0) { ctx.fillStyle = '#aaa'; ctx.fillText(s + 's', x + 2, RULER_H / 2); }
+    }
+    // Lanes + labels.
+    pg.lanes.forEach((a, i) => {
+      const y = laneTop(i);
+      ctx.fillStyle = (i % 2) ? '#181820' : '#14141b';
+      ctx.fillRect(LABEL_W, y, c.width - LABEL_W, ROW_H);
+      ctx.fillStyle = '#cfcfe0'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
+      ctx.fillText(a.label.slice(0, 14), LABEL_W - 6, y + ROW_H / 2);
+      ctx.textAlign = 'left';
+    });
+    // Clips.
+    pg.timeline.forEach(clip => {
+      const li = pg.lanes.findIndex(l => l.id === clip.animation);
+      if (li < 0) return;
+      const x = secToX(clip.start_sec), w = Math.max(3, clip.duration_sec * pxPerSec());
+      const y = laneTop(li) + 3, h = ROW_H - 6;
+      ctx.fillStyle = COLORS[li % COLORS.length];
+      ctx.globalAlpha = 0.85; ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
+      ctx.strokeStyle = '#0008'; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+      ctx.fillStyle = '#000a'; ctx.font = '9px Arial';
+      ctx.fillText(`${clip.duration_sec.toFixed(1)}s`, x + 3, y + h / 2);
+    });
+    // Playhead.
+    if (pg.playing) {
+      const pos = (performance.now() - pg.playStartMs) / 1000;
+      const x = secToX(Math.min(pos, pg.totalSec));
+      ctx.strokeStyle = '#5cff8a'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
+      ctx.lineWidth = 1;
+    }
+  }
+
+  function clipAt(x, y) {
+    const li = laneAtY(y);
+    if (li < 0 || li >= pg.lanes.length) return null;
+    const laneId = pg.lanes[li].id;
+    for (const clip of pg.timeline) {
+      if (clip.animation !== laneId) continue;
+      const x0 = secToX(clip.start_sec), x1 = secToX(clip.start_sec + clip.duration_sec);
+      if (x >= x0 - 2 && x <= x1 + 2) return { clip, li, x0, x1 };
+    }
+    return null;
+  }
+
+  function evtXY(e) {
+    const r = pg.canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  function onDown(e) {
+    const { x, y } = evtXY(e);
+    if (x < LABEL_W || y < RULER_H) return;
+    const li = laneAtY(y);
+    if (li < 0 || li >= pg.lanes.length) return;
+    const hit = clipAt(x, y);
+    if (hit) {
+      const onEdge = x >= hit.x1 - RESIZE;
+      pg.drag = { mode: onEdge ? 'resize' : 'move', clip: hit.clip,
+                  grabSec: xToSec(x) - hit.clip.start_sec };
+    } else {
+      const clip = { animation: pg.lanes[li].id, start_sec: xToSec(x), duration_sec: 0.2 };
+      pg.timeline.push(clip);
+      pg.drag = { mode: 'resize', clip, grabSec: 0 };
+    }
+    drawTimeline();
+  }
+  function onMove(e) {
+    if (!pg.drag) return;
+    const { x } = evtXY(e);
+    const clip = pg.drag.clip;
+    if (pg.drag.mode === 'move') {
+      clip.start_sec = Math.max(0, Math.min(pg.totalSec - clip.duration_sec, xToSec(x) - pg.drag.grabSec));
+    } else {
+      clip.duration_sec = Math.max(0.2, Math.min(pg.totalSec - clip.start_sec, xToSec(x) - clip.start_sec));
+    }
+    drawTimeline();
+  }
+  function onUp() {
+    if (!pg.drag) return;
+    pg.drag = null;
+    saveTimeline();
+  }
+  function onDbl(e) {
+    const { x, y } = evtXY(e);
+    const hit = clipAt(x, y);
+    if (hit) { pg.timeline = pg.timeline.filter(c => c !== hit.clip); drawTimeline(); saveTimeline(); }
+  }
+  async function saveTimeline() {
+    const clean = pg.timeline.map(c => ({
+      animation: c.animation,
+      start_sec: Math.round(c.start_sec * 100) / 100,
+      duration_sec: Math.round(c.duration_sec * 100) / 100,
+    }));
+    try { await api('playground', { method: 'PUT', body: JSON.stringify({ timeline: clean }) }); } catch {}
+  }
+
+  function pgInit() {
+    if (pg.wired) { sizeCanvas(); drawTimeline(); return; }
+    pg.canvas = document.getElementById('pg-timeline');
+    if (!pg.canvas) return;
+    pg.ctx = pg.canvas.getContext('2d');
+    pg.canvas.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    pg.canvas.addEventListener('dblclick', onDbl);
+
+    const lenSel = document.getElementById('pg-length');
+    if (lenSel) { pg.totalSec = parseInt(lenSel.value, 10) || 60;
+      lenSel.onchange = () => { pg.totalSec = parseInt(lenSel.value, 10) || 60; sizeCanvas(); drawTimeline(); }; }
+
+    const info = document.getElementById('pg-seq-info');
+    const setInfo = t => { if (info) info.textContent = t; };
+    const startPlayhead = () => {
+      pg.playing = true; pg.playStartMs = performance.now(); setInfo('playing');
+      const tick = () => {
+        if (!pg.playing) return;
+        const pos = (performance.now() - pg.playStartMs) / 1000;
+        if (pos > pg.totalSec) { stopLocal(); return; }
+        drawTimeline(); requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    };
+    const stopLocal = () => { pg.playing = false; setInfo('stopped'); drawTimeline(); renderTriggerButtons(); };
+
+    document.getElementById('pg-play').onclick = async () => { await pgPost('/play', { with_recording: false }); startPlayhead(); renderTriggerButtons(); };
+    document.getElementById('pg-play-rec').onclick = async () => { await pgPost('/play', { with_recording: true }); startPlayhead(); renderTriggerButtons(); };
+    document.getElementById('pg-stop').onclick = async () => { await pgPost('/stop'); stopLocal(); };
+    document.getElementById('pg-clear').onclick = async () => {
+      if (!confirm('Remove all clips from the timeline?')) return;
+      pg.timeline = []; drawTimeline(); await saveTimeline();
+    };
+
+    // Recording.
+    const fileInput = document.getElementById('pg-rec-file');
+    if (fileInput) fileInput.onchange = async () => {
+      const f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      const st = document.getElementById('pg-rec-status'); if (st) st.textContent = 'uploading…';
+      try {
+        await fetch('/api/playground/recording?name=' + encodeURIComponent(f.name),
+                    { method: 'POST', body: f });
+      } catch {}
+      pgRefresh();
+    };
+    document.getElementById('pg-rec-play').onclick = async () => { await pgPost('/recording/play'); };
+    document.getElementById('pg-rec-stop').onclick = async () => { await pgPost('/recording/stop'); };
+
+    // Ocean.
+    document.querySelectorAll('.pg-ocean-btn').forEach(b => {
+      b.onclick = async () => {
+        await pgPost('/ocean', { enabled: b.dataset.val === 'true' });
+        refreshToggle('.pg-ocean-btn', b.dataset.val === 'true');
+      };
+    });
+
+    pg.wired = true;
+    sizeCanvas(); drawTimeline();
+  }
+
+  // Hook the tab (addEventListener doesn't clobber the existing onclick).
+  const tabBtn = document.querySelector('.tab[data-tab="playground"]');
+  if (tabBtn) tabBtn.addEventListener('click', () => { pgInit(); pgRefresh(); });
+  // If we deep-link to #playground, init on load.
+  if ((location.hash || '').replace(/^#/, '') === 'playground') { pgInit(); pgRefresh(); }
+})();

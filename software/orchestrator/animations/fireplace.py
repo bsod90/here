@@ -69,20 +69,30 @@ _PALETTE = _build_palette()
 
 
 DEFAULT_PARAMS: dict[str, Any] = {
-    # Body geometry.
-    "core_radius":   5.0,
-    "outer_radius": 12.0,
+    # Body geometry. A soft filled disc — hottest core, fading to the rim.
+    "core_radius":   6.0,
+    "outer_radius": 14.0,
     "brightness":    1.0,
-    # Turbulence — animated heat noise inside the body.
+    # Slow "breath" of the whole ember — size + brightness gently swell and
+    # settle. This is the calm, slowed-down pulse the look is built around.
+    "pulse_amp":      0.12,    # fraction the radius swells at the peak
+    "pulse_period_s": 9.0,     # seconds per full breath (bigger = slower)
+    # Grain shimmer — a multi-frequency radial+angular wobble over the body
+    # that gives the rough, vibrating "live coals" texture (borrowed from
+    # the MIDI synth ring). Applied AFTER heat-smoothing so it stays crisp.
+    "shimmer_amount": 0.35,    # 0 = smooth disc, higher = rougher grain
+    "shimmer_speed":  0.45,    # how fast the grain churns (slow = calm)
+    # Turbulence — slow heat noise that makes the body churn, not a flat disc.
     "turb_amp":      0.10,
-    "turb_speed":    0.7,
+    "turb_speed":    0.5,
     "flicker_amp":   0.025,
     "flicker_smoothing": 0.06,
     "heat_smoothing": 0.45,
-    # Flares — tapered, curved tongues. Range-style params are gone: the
-    # spawner applies ±25 % jitter to each "mean" so the same UI slider
-    # drives the whole population.
-    "flare_max":          5,
+    # Flares — tapered, curved tongues. OFF by default (flare_max=0): the
+    # default look is the soft shimmering ember disc, not flame tongues.
+    # Raise Max Flares in the Tune tab to bring them back. Range-style
+    # params are gone: the spawner applies ±25 % jitter to each "mean".
+    "flare_max":          0,
     "flare_spawn_hz":     2.0,
     "flare_speed_mean":  11.0,    # LED/s outward
     "flare_life_mean":    0.95,   # seconds
@@ -106,8 +116,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # rather than displaced full tongues.
     "flare_detach_prob":     0.08,
     "flare_detach_factor":   1.12,   # × outer_radius for the detached base
-    # Embers.
-    "ember_max":          6,
+    # Embers — random sparks around the body. OFF by default for the clean
+    # ember-disc look; raise Max Embers to add drifting sparks.
+    "ember_max":          0,
     "ember_spawn_hz":     2.0,
     "ember_life_mean":    1.05,
     "ember_radius_mean": 16.5,
@@ -216,11 +227,36 @@ def render(frame: bytearray, time_ms: float, params: dict, state: dict,
     dt = (t - last_t) if last_t is not None else 0.0
     state["last_t"] = t
 
-    inner = float(p["core_radius"])
-    outer = float(p["outer_radius"])
+    # Slow breath of the whole ember — gently swells size + brightness.
+    pulse_amp = float(p["pulse_amp"])
+    period = max(0.1, float(p["pulse_period_s"]))
+    pulse = math.sin(2.0 * math.pi * t / period)        # -1..1
+    radius_mult = 1.0 + pulse_amp * pulse
+    pulse_bright = 1.0 + 0.5 * pulse_amp * pulse
+
+    inner = float(p["core_radius"]) * radius_mult
+    outer = float(p["outer_radius"]) * radius_mult
+
+    # MIDI-tab "voice shimmer": a multi-frequency wobble of the *radial
+    # coordinate*, so the ember rim vibrates and the body shows fine moving
+    # grain — the same rough texture as the synth ring (which uses high
+    # angular frequencies: angles×11/17/5). Perturbing the radius itself
+    # (not just brightness) is what gives the characteristic vibrating look.
+    # The radial terms (sin(_D·…)) add grain to the interior, not just the
+    # rim. Time is kept slow so the fireplace stays calm.
+    shimmer_amount = float(p["shimmer_amount"])
+    d_eff = _D
+    if shimmer_amount > 0.001:
+        ss = t * float(p["shimmer_speed"])
+        wobble = (0.55 * np.sin(_THETA * 11.0 + ss * 1.3) +
+                  0.30 * np.sin(_THETA * 17.0 - ss * 1.8) +
+                  0.20 * np.sin(_THETA * 5.0  + ss * 2.6) +
+                  0.40 * np.sin(_D * 3.3 - _THETA * 7.0 - ss * 1.0) +
+                  0.25 * np.sin(_D * 5.7 + ss * 1.5))
+        d_eff = _D - wobble * (shimmer_amount * 2.0)   # LED-unit perturbation
 
     # 1) Base radial heat: 1 at the centre, ~0 at outer.
-    heat = np.clip(1.0 - (_D - inner * 0.25) / (outer - inner * 0.25 + 1e-6),
+    heat = np.clip(1.0 - (d_eff - inner * 0.25) / (outer - inner * 0.25 + 1e-6),
                    0.0, 1.0).astype(np.float32)
     # Slight squash so the body has volume, not a flat disc.
     heat = heat ** 1.15
@@ -317,8 +353,8 @@ def render(frame: bytearray, time_ms: float, params: dict, state: dict,
         heat = sm * prev + (1.0 - sm) * heat
     state["heat_prev"] = heat.copy()
 
-    # 6) Palette LUT lookup.
-    heat = np.clip(heat * float(p["brightness"]), 0.0, 1.0)
+    # 6) Palette LUT lookup (slow breath also modulates brightness).
+    heat = np.clip(heat * float(p["brightness"]) * pulse_bright, 0.0, 1.0)
     idx = (heat * 255).astype(np.uint8)
     pixels = _PALETTE[idx]                      # (GRID, GRID, 3) uint8
 

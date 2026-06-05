@@ -1,35 +1,35 @@
 """Audio playback + live monitor tap for the orchestrator.
 
-One ffmpeg process is the whole audio engine. It reads the ocean backdrop
-loop, applies a software volume, then `asplit`s the *same* post-volume
-signal two ways:
+One ffmpeg process is the whole audio engine. It loops every *enabled*
+track, applies a per-track software volume, mixes them, then `asplit`s
+the *same* post-mix signal two ways:
 
     ┌─ [spk] ─▶ ALSA (default) ─▶ amp ─▶ bench speakers
     │
-  volume@vol ──asplit──┐
-    │                  └─ [mon] ─▶ MP3 ─▶ stdout ─▶ orchestrator ─▶ browser
+  tracks ─volume@vol_<name>─▶ amix ──asplit──┐
+    │                                         └─ [mon] ─▶ MP3 ─▶ stdout ─▶ browser
 
 So the browser monitor (Simulator tab) hears a bit-identical copy of what
 the speakers play, *after* the volume/mix stage — not a separate parallel
-playback. When we add more sources later (intro voice, phone music) they
-slot into the same filtergraph (e.g. `amix`) ahead of the split and both
-outputs follow automatically.
+playback. Multiple ambiences (ocean, fireplace, …) are independent tracks
+that slot into the same filtergraph; both outputs follow automatically.
 
-Volume is changed live and gaplessly via ffmpeg's `azmq` filter: we send
-`volume@vol volume <0..1>` over a ZMQ REQ socket and the running graph
-updates at the next frame — no process restart, no click. Because volume
-now lives in software ahead of the split, the hardware ALSA mixer is
-pinned to 100% at start so it doesn't attenuate on top (which would make
-the speakers quieter than the monitor stream). If ZMQ is unavailable we
-fall back to restarting ffmpeg with the new level.
+Per-track volume is changed live and gaplessly via ffmpeg's `azmq` filter:
+we send `volume@vol_<name> volume <0..1>` over a ZMQ REQ socket and the
+running graph updates at the next frame — no process restart, no click.
+Toggling a track on/off changes the input set, so that *does* relaunch
+ffmpeg. Because volume lives in software ahead of the split, the hardware
+ALSA mixer is pinned to 100% at start so it doesn't attenuate on top. If
+ZMQ is unavailable we fall back to restarting ffmpeg with the new level.
 
 Public API:
 
-    set_backdrop(on, volume)   → toggle/volume the loop
-    snapshot()                 → state dict for the admin panel
-    stop()                     → shutdown
-    add_listener(loop, queue)  → register a browser monitor stream
-    remove_listener(id)        → drop one
+    set_track(name, enabled, volume)  → toggle/volume one track
+    set_backdrop(enabled, volume)     → alias for the "ocean" track (compat)
+    snapshot()                        → state dict for the admin panel
+    stop()                            → shutdown
+    add_listener(loop, queue)         → register a browser monitor stream
+    remove_listener(id)               → drop one
 """
 from __future__ import annotations
 
@@ -60,22 +60,28 @@ _UNSET = object()  # "mixer not yet detected" sentinel, distinct from None
 # the filtergraph parser is far more trouble than it's worth.)
 _ZMQ_ADDR = "tcp://127.0.0.1:5555"
 _ZMQ_TIMEOUT_MS = 500
-# The named volume-filter instance we target with live commands.
-_VOLUME_FILTER = "volume@vol"
 
 _MON_CHUNK = 4096      # bytes per read from ffmpeg's mp3 pipe
 _MON_QUEUE_MAX = 128   # per-listener backlog before we drop oldest (slow client)
 
+# Resample every track to one device-friendly rate. The ALSA card here is
+# pinned at 44.1 kHz; a source at another rate (e.g. a 96 kHz fireplace
+# sample) otherwise fails the ALSA link ("Cannot select sample rate") when
+# it's the only track. Resampling per chain also lets amix combine tracks
+# of differing native rates.
+_SAMPLE_RATE = 44100
+
+# The named track every legacy caller (main.py boot, the playground ocean
+# toggle) addresses through set_backdrop()/the backdrop_* snapshot fields.
+_OCEAN = "ocean"
+
 
 class AudioPlayer:
-    DEFAULT_BACKDROP_FILE = "ocean.wav"
-
     def __init__(self, media_dir: str | Path,
-                 backdrop_file: str = DEFAULT_BACKDROP_FILE,
+                 tracks: dict | None = None,
                  mixer_control: str | None = None,
                  alsa_device: str = "default") -> None:
         self.media_dir = Path(media_dir)
-        self.backdrop_file = backdrop_file
         self.alsa_device = alsa_device
         self._mixer_override = mixer_control or None
         # Resolved mixer control name; _UNSET until first use, then a str
@@ -84,58 +90,97 @@ class AudioPlayer:
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
         self._monitor_thread: threading.Thread | None = None
-        # Cached state for the snapshot — kept under the lock so the
-        # admin poll doesn't race a stop/start.
-        self._backdrop_enabled = False
-        self._backdrop_volume = 0.5
+        # Track model: ordered {name: {"file", "enabled", "volume", "label"}}.
+        # Insertion order is stable, so ffmpeg input indices stay consistent.
+        self._tracks: dict[str, dict] = {}
+        for name, spec in (tracks or {}).items():
+            self._tracks[name] = {
+                "file":    str(spec.get("file", "")),
+                "enabled": bool(spec.get("enabled", False)),
+                "volume":  max(0.0, min(1.0, float(spec.get("volume", 0.5)))),
+                "label":   str(spec.get("label", name.title())),
+            }
         # Browser monitor subscribers: id → (event_loop, asyncio.Queue).
-        # Guarded by its own lock so the ffmpeg pump thread never contends
-        # with playback start/stop.
         self._sub_lock = threading.Lock()
         self._subs: dict[int, tuple] = {}
         self._next_sub_id = 1
 
     # ── Public API ──────────────────────────────────────────
-    def set_backdrop(self, enabled: bool, volume: float | None = None) -> None:
-        """Turn the backdrop loop on or off, optionally adjusting volume.
-
-        A volume-only change on the running loop is applied live (gapless)
-        via ZMQ; on/off transitions (re)launch or tear down ffmpeg."""
+    def set_track(self, name: str, enabled: bool | None = None,
+                  volume: float | None = None) -> None:
+        """Update one track. A volume-only change to a playing track is
+        applied live (gapless) via ZMQ; enabling/disabling a track changes
+        the ffmpeg input set, so that relaunches the engine."""
         with self._lock:
-            if volume is not None:
-                self._backdrop_volume = max(0.0, min(1.0, float(volume)))
-            target_on = bool(enabled)
-
-            if target_on == self._backdrop_enabled:
-                if target_on and volume is not None:
-                    self._apply_volume_locked()
+            tr = self._tracks.get(name)
+            if tr is None:
+                logger.warning("audio: unknown track %r", name)
                 return
+            prev_enabled_set = self._enabled_names_locked()
+            if volume is not None:
+                tr["volume"] = max(0.0, min(1.0, float(volume)))
+            if enabled is not None:
+                tr["enabled"] = bool(enabled)
 
-            self._stop_backdrop_locked()
-            if target_on:
+            if self._enabled_names_locked() != prev_enabled_set:
+                # Input set changed → rebuild the graph.
+                self._stop_backdrop_locked()
+                if self._enabled_names_locked():
+                    self._start_backdrop_locked()
+            elif volume is not None and tr["enabled"]:
+                # Same inputs, just a level tweak → live, no restart.
+                self._apply_volume_locked(name)
+
+    def set_backdrop(self, enabled: bool, volume: float | None = None) -> None:
+        """Back-compat alias: the original single 'ocean' backdrop."""
+        self.set_track(_OCEAN, enabled=enabled, volume=volume)
+
+    def start(self) -> None:
+        """Boot-time: launch the engine for whatever tracks are enabled in
+        the loaded config (so a backdrop left ON survives a restart)."""
+        with self._lock:
+            if self._proc is None and self._enabled_names_locked():
                 self._start_backdrop_locked()
-            self._backdrop_enabled = target_on
 
     def snapshot(self) -> dict:
         with self._lock:
-            path = self.media_dir / self.backdrop_file
             with self._sub_lock:
                 listeners = len(self._subs)
-            return {
-                "backdrop_enabled": self._backdrop_enabled,
-                "backdrop_volume":  self._backdrop_volume,
-                "backdrop_file":    self.backdrop_file,
-                "backdrop_present": path.exists(),
-                "running":          self._proc is not None
-                                    and self._proc.poll() is None,
+            running = self._proc is not None and self._proc.poll() is None
+            tracks = {}
+            for name, tr in self._tracks.items():
+                path = self.media_dir / tr["file"]
+                tracks[name] = {
+                    "file":    tr["file"],
+                    "label":   tr["label"],
+                    "enabled": tr["enabled"],
+                    "volume":  tr["volume"],
+                    "present": path.exists(),
+                }
+            snap = {
+                "tracks":            tracks,
+                "running":           running,
                 "monitor_listeners": listeners,
             }
+            # Legacy mirror of the ocean track so existing callers (the
+            # playground ocean toggle, the Run-tab "Ocean backdrop" controls)
+            # keep working unchanged.
+            ocean = tracks.get(_OCEAN)
+            if ocean is not None:
+                snap.update({
+                    "backdrop_enabled": ocean["enabled"],
+                    "backdrop_volume":  ocean["volume"],
+                    "backdrop_file":    ocean["file"],
+                    "backdrop_present": ocean["present"],
+                })
+            return snap
 
     def stop(self) -> None:
         """Tear down on shutdown. Safe to call when nothing's playing."""
         with self._lock:
             self._stop_backdrop_locked()
-            self._backdrop_enabled = False
+            for tr in self._tracks.values():
+                tr["enabled"] = False
 
     # ── Monitor stream (browser) ────────────────────────────
     def add_listener(self, loop, queue) -> int:
@@ -153,32 +198,53 @@ class AudioPlayer:
             self._subs.pop(sid, None)
 
     # ── Internals ───────────────────────────────────────────
+    def _enabled_names_locked(self) -> tuple[str, ...]:
+        """Names of enabled tracks whose files exist, in stable order."""
+        out = []
+        for name, tr in self._tracks.items():
+            if tr["enabled"] and (self.media_dir / tr["file"]).exists():
+                out.append(name)
+        return tuple(out)
+
+    def _build_filtergraph(self, names: tuple[str, ...]) -> str:
+        """Build the ffmpeg filtergraph for the enabled tracks.
+
+        Single track: volume → asplit directly (no amix — amix is for 2+
+        inputs and a single-input amix yields no usable output). Multiple:
+        one volume chain per track → amix → asplit. The azmq command
+        listener sits on the first chain either way."""
+        if len(names) == 1:
+            name = names[0]
+            vol = self._tracks[name]["volume"]
+            return (f"[0:a]azmq,volume@vol_{name}={vol:.4f},"
+                    f"aresample={_SAMPLE_RATE},asplit=2[spk][mon]")
+        chains, labels = [], []
+        for idx, name in enumerate(names):
+            vol = self._tracks[name]["volume"]
+            azmq = "azmq," if idx == 0 else ""
+            chains.append(f"[{idx}:a]{azmq}volume@vol_{name}={vol:.4f},"
+                          f"aresample={_SAMPLE_RATE}[a{idx}]")
+            labels.append(f"[a{idx}]")
+        # normalize=0 keeps each track's level independent (no auto-duck).
+        mix = (f"{''.join(labels)}amix=inputs={len(names)}:normalize=0[mix];"
+               f"[mix]asplit=2[spk][mon]")
+        return ";".join(chains) + ";" + mix
+
     def _start_backdrop_locked(self) -> None:
-        path = self.media_dir / self.backdrop_file
-        if not path.exists():
-            logger.warning(
-                "audio: backdrop file not found at %s — toggle is ON but "
-                "nothing will play. Make sure deploy copied media/ to "
-                "the Pi.", path)
+        names = self._enabled_names_locked()
+        if not names:
             return
-        # Volume now lives in software (the volume@vol filter), so pin the
-        # hardware mixer wide open — otherwise it attenuates on top and the
-        # speakers end up quieter than the monitor stream.
+        # Volume lives in software (the volume@vol_* filters), so pin the
+        # hardware mixer wide open — otherwise it attenuates on top.
         self._pin_hardware_mixer_locked()
 
-        vol = self._backdrop_volume
-        # filtergraph: live-controllable volume, then split the identical
-        # post-volume signal to the speaker + monitor branches.
-        fgraph = (f"[0:a]azmq,{_VOLUME_FILTER}={vol:.4f},"
-                  f"asplit=2[spk][mon]")
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-stream_loop", "-1", "-i", str(path),
-            "-filter_complex", fgraph,
-            # Speaker branch → the real card (amp/speakers).
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        for name in names:
+            cmd += ["-stream_loop", "-1", "-i",
+                    str(self.media_dir / self._tracks[name]["file"])]
+        cmd += [
+            "-filter_complex", self._build_filtergraph(names),
             "-map", "[spk]", "-f", "alsa", self.alsa_device,
-            # Monitor branch → MP3 on stdout, drained by the pump thread
-            # and fanned out to browser listeners.
             "-map", "[mon]", "-c:a", "libmp3lame", "-b:a", "128k",
             "-flush_packets", "1", "-f", "mp3", "pipe:1",
         ]
@@ -190,8 +256,8 @@ class AudioPlayer:
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
-            logger.info("audio: started ffmpeg engine %s (vol=%.0f%%) — pid=%d",
-                        path.name, vol * 100, self._proc.pid)
+            logger.info("audio: started ffmpeg engine tracks=%s — pid=%d",
+                        ",".join(names), self._proc.pid)
         except FileNotFoundError:
             logger.exception("audio: ffmpeg not on PATH — install ffmpeg")
             self._proc = None
@@ -227,13 +293,14 @@ class AudioPlayer:
         if t is not None and t is not threading.current_thread():
             t.join(timeout=2.0)
 
-    def _apply_volume_locked(self) -> None:
-        """Apply the current volume to the running engine without a glitch.
-        ZMQ first; only restart if that path is unavailable."""
-        if self._send_zmq_volume(self._backdrop_volume):
+    def _apply_volume_locked(self, name: str) -> None:
+        """Apply one track's current volume to the running engine without a
+        glitch. ZMQ first; only restart if that path is unavailable."""
+        if self._send_zmq_volume(name, self._tracks[name]["volume"]):
             return
         self._stop_backdrop_locked()
-        self._start_backdrop_locked()
+        if self._enabled_names_locked():
+            self._start_backdrop_locked()
 
     # ── ffmpeg monitor pump ─────────────────────────────────
     def _pump_monitor(self, proc: subprocess.Popen) -> None:
@@ -277,7 +344,7 @@ class AudioPlayer:
                 pass
 
     # ── Live volume over ZMQ ────────────────────────────────
-    def _send_zmq_volume(self, volume: float) -> bool:
+    def _send_zmq_volume(self, name: str, volume: float) -> bool:
         if zmq is None or self._proc is None or self._proc.poll() is not None:
             return False
         pct = max(0.0, min(1.0, volume))
@@ -288,7 +355,7 @@ class AudioPlayer:
             sock.setsockopt(zmq.RCVTIMEO, _ZMQ_TIMEOUT_MS)
             sock.setsockopt(zmq.SNDTIMEO, _ZMQ_TIMEOUT_MS)
             sock.connect(_ZMQ_ADDR)
-            sock.send_string(f"{_VOLUME_FILTER} volume {pct:.4f}")
+            sock.send_string(f"volume@vol_{name} volume {pct:.4f}")
             reply = sock.recv_string()
         except Exception:
             # azmq not up yet, port not bound, timeout — caller restarts.

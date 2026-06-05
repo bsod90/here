@@ -30,6 +30,8 @@ from . import scale as scale_routes
 from . import telemetry as telemetry_routes
 from . import ap as ap_routes
 from . import audio as audio_routes
+from . import playground as playground_routes
+from . import wled as wled_routes
 
 # Re-export so existing `from admin.routes import create_app, LogHandler`
 # import paths keep working without any caller edits.
@@ -42,7 +44,7 @@ logger = logging.getLogger(__name__)
 def create_app(config, engine, transport, telemetry=None, sim_bus=None,
                osc_state=None, scene=None, sequence_store=None,
                patch_store=None, tap_tracker=None, scale=None,
-               telemetry_history=None, audio=None) -> FastAPI:
+               telemetry_history=None, audio=None, playground=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -89,7 +91,11 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return (static_dir / "index.html").read_text()
+        # no-store so a normal reload always re-fetches the entry page and
+        # picks up the latest admin.js?v=NN — otherwise a cached index keeps
+        # pointing at a stale script version (and stale bug fixes never load).
+        return HTMLResponse((static_dir / "index.html").read_text(),
+                            headers={"Cache-Control": "no-store"})
 
     # ── Domain submodules ──────────────────────────────────────
     scene_routes.register(app, config, engine, scene, sequence_store,
@@ -98,6 +104,8 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
     telemetry_routes.register(app, telemetry, telemetry_history)
     ap_routes.register(app)
     audio_routes.register(app, audio, config)
+    playground_routes.register(app, playground, audio, config, engine)
+    wled_routes.register(app, config)
 
     # ── Inline: config / defaults ──────────────────────────────
     @app.get("/api/config")

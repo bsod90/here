@@ -52,27 +52,35 @@ def register(app: FastAPI, audio, config) -> None:
         if audio is None:
             return JSONResponse({"error": "audio disabled"}, status_code=503)
         body = await safe_json(request)
-        # Pull the two known fields; ignore anything else so we don't
-        # silently accept typos.
-        changes = {}
-        if "backdrop_enabled" in body:
-            changes["backdrop_enabled"] = bool(body["backdrop_enabled"])
-        if "backdrop_volume" in body:
+
+        # Track identified by `track` (defaults to "ocean" so the legacy
+        # backdrop_* fields keep working). Accept {enabled, volume} or the
+        # legacy {backdrop_enabled, backdrop_volume}.
+        name = body.get("track", "ocean")
+        enabled = body.get("enabled", body.get("backdrop_enabled"))
+        volume = body.get("volume", body.get("backdrop_volume"))
+
+        vol_val = None
+        if volume is not None:
             try:
-                changes["backdrop_volume"] = max(0.0, min(1.0,
-                    float(body["backdrop_volume"])))
+                vol_val = max(0.0, min(1.0, float(volume)))
             except (TypeError, ValueError):
-                return JSONResponse({"error": "backdrop_volume must be a number"},
+                return JSONResponse({"error": "volume must be a number"},
                                     status_code=400)
-        if not changes:
+        en_val = None if enabled is None else bool(enabled)
+
+        if en_val is None and vol_val is None:
             return audio.snapshot()
-        # Apply to the player (combine in one call so volume + enable
-        # together don't cause a stop/start ping-pong).
-        audio.set_backdrop(
-            enabled=changes.get("backdrop_enabled",
-                                audio.snapshot()["backdrop_enabled"]),
-            volume=changes.get("backdrop_volume"),
-        )
-        # Persist so it survives a restart.
-        config.set("audio", changes)
+
+        # Apply both in one call so volume + enable don't ping-pong.
+        audio.set_track(name, enabled=en_val, volume=vol_val)
+
+        # Persist this track's changed fields so they survive a restart.
+        patch = {}
+        if en_val is not None:
+            patch["enabled"] = en_val
+        if vol_val is not None:
+            patch["volume"] = vol_val
+        if patch:
+            config.set("audio", {"tracks": {name: patch}})
         return audio.snapshot()

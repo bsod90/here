@@ -214,13 +214,29 @@ DEFAULT_CONFIG = {
     # ./media/ → /opt/here/media/ separately from the orchestrator source.
     "audio": {
         "media_dir":         "/opt/here/media",
-        "backdrop_enabled":  False,
-        "backdrop_volume":   0.5,         # 0.0 – 1.0 (software volume in the ffmpeg engine)
-        "backdrop_file":     "ocean.wav",
+        # Independent looping ambience tracks, mixed together. Each has its
+        # own on/off + software volume (0.0–1.0). Add a track by dropping a
+        # file in media/ and adding an entry here.
+        "tracks": {
+            "ocean":     {"file": "ocean.wav",
+                          "label": "Ocean", "enabled": False, "volume": 0.5},
+            "fireplace": {"file": "FireFireplace_S08FI.16.wav",
+                          "label": "Fireplace", "enabled": False, "volume": 0.5},
+        },
         # ALSA simple-mixer control, pinned to 100% so it doesn't attenuate
         # on top of the software volume. Empty = auto-detect (prefers
         # PCM/Master/…); set explicitly to override.
         "mixer_control":     "",
+    },
+
+    # Nadia's Playground — isolated experimentation enclave (see
+    # docs/nadia_playground.md). Persists her seconds-timeline + recording
+    # choice. Kept separate so it can't affect breathing/standby/scene.
+    "playground": {
+        # timeline clips: [{animation, start_sec, duration_sec}]
+        "timeline":        [],
+        # uploaded meditation recording filename (under media_dir/playground/)
+        "recording_file":  None,
     },
 
     # Dual-HX711 bench scale. Wiring: DT → 16/19, shared SCK → 21,

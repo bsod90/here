@@ -25,7 +25,9 @@
     <button class="tab" data-tab="tune">Tune</button>
     <button class="tab" data-tab="scene">MIDI</button>
     <button class="tab" data-tab="sim">Simulator</button>
+    <button class="tab" data-tab="wled">WLED</button>
     <button class="tab" data-tab="telemetry">Telemetry</button>
+    <button class="tab" data-tab="playground">Playground</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
 
@@ -105,17 +107,9 @@
 
       <h2>Audio</h2>
       <div class="param-group" id="audio-card">
-        <div class="row-line">
-          <label class="dim">Ocean backdrop</label>
-          <button class="mode-btn audio-backdrop-btn" data-val="true">On</button>
-          <button class="mode-btn audio-backdrop-btn" data-val="false">Off</button>
-          <span id="audio-backdrop-status" class="dim tiny"></span>
-        </div>
-        <div class="row-line">
-          <label class="dim">Volume</label>
-          <input type="range" id="audio-vol" min="0" max="100" step="1" style="flex:1;">
-          <span id="audio-vol-val" class="dim tiny" style="min-width:38px; text-align:right;">—</span>
-        </div>
+        <!-- One block per ambience track (ocean, fireplace, …); built by
+             admin.js from GET /api/audio. -->
+        <div id="audio-tracks"></div>
       </div>
 
       <h2>Targets</h2>
@@ -345,6 +339,26 @@
     </section>
 
     <!-- ============================================================ -->
+    <section id="tab-wled" class="pane">
+      <h2>WLED Native Effects</h2>
+      <p class="dim">
+        The WLED controller's own UI, re-served through the Pi (it's on the
+        Pi's Ethernet link and not directly reachable from here). Hand the
+        matrix over to WLED's built-in effects — the Pi pauses its own
+        animation while WLED drives the LEDs. Switch back any time.
+      </p>
+      <div class="sim-header">
+        <div class="mode-buttons" style="margin:0;">
+          <button class="mode-btn" data-mode="wled">🎛 Use WLED effects (pause Pi)</button>
+          <button class="mode-btn" data-mode="standby">↩ Resume Pi animations</button>
+        </div>
+        <button id="wled-reload" class="mode-btn" title="Reload WLED UI">↻</button>
+      </div>
+      <div id="wled-status" class="dim tiny" style="margin:0 0 8px;"></div>
+      <iframe id="wled-iframe" class="sim-frame" src="about:blank" title="WLED"></iframe>
+    </section>
+
+    <!-- ============================================================ -->
     <section id="tab-telemetry" class="pane">
       <h2>History</h2>
       <div class="th-controls">
@@ -447,6 +461,68 @@
     </section>
 
     <!-- ============================================================ -->
+    <!-- Nadia's Playground — isolated enclave (see docs/nadia_playground.md) -->
+    <section id="tab-playground" class="pane">
+      <h2>Nadia's Playground</h2>
+      <p class="dim tiny">Your space to build a breathing meditation. Trigger
+        animations, lay them out on a timeline (in seconds), play with your
+        recording, and toggle the ocean. Nothing here can break the rest of
+        the app. Ask Claude to add new animations any time.</p>
+
+      <h2>Animations</h2>
+      <div class="dim tiny">Tap to show one now. (Ask Claude to add more.)</div>
+      <div id="pg-anim-buttons" class="mode-buttons"></div>
+
+      <h2>Timeline</h2>
+      <div class="ableton-bar">
+        <button class="tiny-btn play-btn" id="pg-play" title="Play the timeline">▶ Play</button>
+        <button class="tiny-btn" id="pg-play-rec" title="Play timeline + your recording">▶ + Recording</button>
+        <button class="tiny-btn" id="pg-stop" title="Stop">■ Stop</button>
+        <span class="bar-sep"></span>
+        <label class="dim tiny">length</label>
+        <select id="pg-length" class="tiny-sel">
+          <option value="30">30s</option>
+          <option value="60" selected>60s</option>
+          <option value="120">2 min</option>
+          <option value="300">5 min</option>
+          <option value="600">10 min</option>
+        </select>
+        <span class="bar-sep"></span>
+        <button class="tiny-btn" id="pg-clear" title="Remove all clips">Clear all</button>
+        <span class="dim tiny" id="pg-seq-info">stopped</span>
+      </div>
+      <div class="dim tiny" style="margin:4px 0;">
+        Drag on a lane to add a clip · drag a clip to move · drag its right
+        edge to resize · double-click to delete.
+      </div>
+      <div id="pg-timeline-wrap" class="piano-roll-wrap">
+        <canvas id="pg-timeline"></canvas>
+      </div>
+
+      <h2>Recording</h2>
+      <div class="param-group" id="pg-recording-card">
+        <div class="row-line">
+          <label class="dim">Your meditation file</label>
+          <input type="file" id="pg-rec-file" accept=".mp3,.wav">
+          <span id="pg-rec-status" class="dim tiny"></span>
+        </div>
+        <div class="row-line">
+          <button class="mode-btn" id="pg-rec-play">▶ Play recording</button>
+          <button class="mode-btn" id="pg-rec-stop">■ Stop recording</button>
+        </div>
+      </div>
+
+      <h2>Ocean</h2>
+      <div class="param-group" id="pg-ocean-card">
+        <div class="row-line">
+          <label class="dim">Ocean sound</label>
+          <button class="mode-btn pg-ocean-btn" data-val="true">On</button>
+          <button class="mode-btn pg-ocean-btn" data-val="false">Off</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
     <section id="tab-logs" class="pane">
       <h2>Logs</h2>
       <div id="log-viewer"></div>
@@ -454,6 +530,6 @@
   </main>
 
   <script src="/static/lib/nexusui.min.js"></script>
-  <script src="/static/admin.js?v=86"></script>
+  <script src="/static/admin.js?v=91"></script>
 </body>
 </html>

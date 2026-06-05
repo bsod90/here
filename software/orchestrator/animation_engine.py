@@ -35,6 +35,10 @@ class ModeSpec:
     fade_in_s: float = 0.0
     fade_out_s: float = 0.0
     needs_state: bool = False                # engine keeps a per-mode state dict
+    suppress_output: bool = False            # don't transmit frames (hands the
+                                             # LEDs to WLED's own effects — the
+                                             # DDP stream stops so WLED drops out
+                                             # of realtime override; see "wled")
 
 
 def _render_breathing(engine, frame, t_ms, fade_in, fade_out, state):
@@ -87,6 +91,16 @@ def _render_midi(engine, frame, t_ms, fade_in, fade_out, state):
     engine.scene.render(frame, t_ms, render_params)
 
 
+def _render_playground(engine, frame, t_ms, fade_in, fade_out, state):
+    # Nadia's Playground — isolated. Delegates to the Playground controller
+    # (animations registry + seconds timeline). No-op if not wired.
+    if getattr(engine, "playground", None) is None:
+        for i in range(len(frame)):
+            frame[i] = 0
+        return
+    engine.playground.render(frame, t_ms, state)
+
+
 def _render_off(engine, frame, t_ms, fade_in, fade_out, state):
     for i in range(len(frame)):
         frame[i] = 0
@@ -102,8 +116,14 @@ MODE_REGISTRY: dict[str, ModeSpec] = {
                           fireplace.FADE_IN_S, fireplace.FADE_OUT_S,
                           needs_state=True),
     "midi":      ModeSpec("midi",      _render_midi),
+    "playground": ModeSpec("playground", _render_playground,
+                           2.0, 2.0, needs_state=True),
     "debug":     ModeSpec("debug",     _render_debug),
     "off":       ModeSpec("off",       _render_off),
+    # WLED-native: the Pi pauses its own animation (stops the DDP stream
+    # via suppress_output) so the WLED controller falls back to its own
+    # built-in effects, driven from the WLED UI re-served under /wled/.
+    "wled":      ModeSpec("wled",      _render_off, suppress_output=True),
 }
 
 # Legacy mode name migrations (old saved configs).
@@ -122,13 +142,19 @@ logger = logging.getLogger(__name__)
 
 class AnimationEngine:
     def __init__(self, config, transport, sim_bus=None, osc_state=None,
-                 scene=None, scale=None, time_provider=time.monotonic):
+                 scene=None, scale=None, playground=None,
+                 time_provider=time.monotonic):
         self.config = config
         self.transport = transport
         self.sim_bus = sim_bus
         self.osc_state = osc_state
         self.scene = scene
         self.scale = scale
+        self.playground = playground   # Nadia's Playground controller (isolated)
+        # Optional callback(prev_mode, new_mode) fired after each mode
+        # change (outside the lock). Used to couple mode-specific ambience,
+        # e.g. fireplace sound following fireplace mode. Set by main.py.
+        self.on_mode_change = None
         # Injected monotonic clock — defaults to time.monotonic, but
         # tests can pass a fake clock to drive the frame loop or the
         # transition coordinator without real-time sleeps.
@@ -192,6 +218,15 @@ class AnimationEngine:
                 self._transition.start(prev, value, self.time_ms())
             else:
                 self._transition.clear()
+        # Notify listeners AFTER releasing the lock — the callback may do
+        # slow work (e.g. start/stop an audio subprocess) and must not run
+        # under the engine lock. Used to couple mode-specific ambience
+        # (fireplace sound follows fireplace mode).
+        if prev != value and self.on_mode_change is not None:
+            try:
+                self.on_mode_change(prev, value)
+            except Exception:
+                logger.exception("on_mode_change callback failed")
 
     @property
     def actual_fps(self):
@@ -253,7 +288,12 @@ class AnimationEngine:
                 weight_shadows.render(self.frame, time_ms, weight_params,
                                       snap, clear=False)
 
-            self.transport.send_frame(self.frame)
+            # Suppressed modes (e.g. "wled") render locally but DON'T
+            # transmit — stopping the DDP stream lets the WLED controller
+            # fall back to its own native effects.
+            spec = MODE_REGISTRY.get(mode)
+            if spec is None or not spec.suppress_output:
+                self.transport.send_frame(self.frame)
 
             # Mirror the same frame to any simulator UI clients so what
             # they render matches what WLED is rendering.

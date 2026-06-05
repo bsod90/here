@@ -14,6 +14,7 @@ from scene.envelopes import Envelope, default_envelopes
 from scene.physics import PhysicsParams
 from scene.tap import TapTracker
 from scene.animations import REGISTRY as SCENE_ANIMATION_REGISTRY
+from playground import Playground
 from admin.routes import create_app, LogHandler
 from scale import ScaleSensor, ScaleConfig
 from telemetry_history import TelemetryHistory
@@ -206,24 +207,67 @@ def main():
         scale=scale,
     )
 
-    # Audio playback (ocean backdrop loop, more sounds later).
+    # Audio playback — independent looping ambience tracks (ocean, fireplace),
+    # mixed together; each with its own on/off + volume.
     audio_cfg = config.get("audio") or {}
+    # ── Legacy migration: single backdrop_* fields → tracks.ocean ──
+    # Guard on non-None values so it runs once: after migrating we null the
+    # legacy keys, and a later boot then skips this block.
+    if (audio_cfg.get("backdrop_enabled") is not None
+            or audio_cfg.get("backdrop_volume") is not None):
+        tracks = dict(audio_cfg.get("tracks") or {})
+        ocean = dict(tracks.get("ocean") or {})
+        if audio_cfg.get("backdrop_enabled") is not None:
+            ocean["enabled"] = bool(audio_cfg["backdrop_enabled"])
+        if audio_cfg.get("backdrop_volume") is not None:
+            ocean["volume"] = float(audio_cfg["backdrop_volume"])
+        if audio_cfg.get("backdrop_file"):
+            ocean.setdefault("file", audio_cfg["backdrop_file"])
+        ocean.setdefault("label", "Ocean")
+        tracks["ocean"] = ocean
+        # Drop the legacy scalars and persist the migrated track set.
+        config.set("audio", {"tracks": tracks,
+                             "backdrop_enabled": None,
+                             "backdrop_volume": None,
+                             "backdrop_file": None})
+        audio_cfg = config.get("audio") or {}
+        logger.info("migrated legacy audio.backdrop_* → audio.tracks.ocean")
     audio = AudioPlayer(
         media_dir=audio_cfg.get("media_dir", "/opt/here/media"),
-        backdrop_file=audio_cfg.get("backdrop_file", "ocean.wav"),
+        tracks=audio_cfg.get("tracks") or {},
         mixer_control=audio_cfg.get("mixer_control") or None,
     )
-    # Apply saved on/off state at boot — survive deploy.
-    audio.set_backdrop(
-        enabled=bool(audio_cfg.get("backdrop_enabled", False)),
-        volume=float(audio_cfg.get("backdrop_volume", 0.5)),
-    )
+    # Resume any track left ON before the restart.
+    audio.start()
+
+    # Couple the fireplace ambience to fireplace mode: entering fireplace
+    # turns the sound on, leaving it turns it off. Fires on every mode
+    # change path (admin button, scale auto-engage, sensor).
+    def _mode_audio_coupling(prev_mode: str, new_mode: str) -> None:
+        if new_mode == "fireplace":
+            audio.set_track("fireplace", enabled=True)
+            config.set("audio", {"tracks": {"fireplace": {"enabled": True}}})
+            logger.info("fireplace mode → fireplace sound ON")
+        elif prev_mode == "fireplace":
+            audio.set_track("fireplace", enabled=False)
+            config.set("audio", {"tracks": {"fireplace": {"enabled": False}}})
+            logger.info("left fireplace mode → fireplace sound OFF")
+    engine.on_mode_change = _mode_audio_coupling
+    # Boot already in fireplace mode → make the ambience match.
+    if engine.mode == "fireplace":
+        _mode_audio_coupling(None, "fireplace")
+
+    # Nadia's Playground — isolated experimentation mode (see
+    # docs/nadia_playground.md). Attached to the engine for its render.
+    playground = Playground(config, audio=audio)
+    engine.playground = playground
 
     app = create_app(config, engine, transport, telemetry, sim_bus,
                      osc_state=osc_state, scene=scene,
                      sequence_store=seq_store, patch_store=patch_store,
                      tap_tracker=tap_tracker, scale=scale,
-                     telemetry_history=telemetry_history, audio=audio)
+                     telemetry_history=telemetry_history, audio=audio,
+                     playground=playground)
 
     # Start background workers
     engine.start()
