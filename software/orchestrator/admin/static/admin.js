@@ -191,13 +191,17 @@ if (_wledReload) _wledReload.onclick = () => {
     }
   }
   btn.onclick = () => { on ? stopAudio('') : startAudio(); };
-  // 'ended'/'error'/'stalled' on a live stream → try to recover rather
-  // than dying. The running-check inside scheduleReconnect handles the
-  // case where the Pi backdrop was actually switched off.
+  // Only REAL failures reconnect: 'error' (decode/network) and 'ended'
+  // (server closed the stream). 'stalled'/'waiting' are NORMAL for a live
+  // stream — the player catches up to the live edge and waits a beat for
+  // the next chunk — so we just show "buffering…" and let the browser
+  // resume on its own (reconnecting on those tore down a healthy stream).
   el.addEventListener('ended',   () => scheduleReconnect('stream ended'));
   el.addEventListener('error',   () => scheduleReconnect('audio error'));
-  el.addEventListener('stalled', () => scheduleReconnect('stalled'));
+  el.addEventListener('waiting', () => { if (on) setStatus('buffering…'); });
+  el.addEventListener('stalled', () => { if (on) setStatus('buffering…'); });
   el.addEventListener('playing', () => { if (on) setStatus('live'); });
+  el.addEventListener('canplay', () => { if (on) setStatus('live'); });
 }
 
 // ── UI primitives ─────────────────────────────────────────
