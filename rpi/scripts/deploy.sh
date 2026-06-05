@@ -57,6 +57,14 @@ rsync -az --delete \
     --exclude '__pycache__' --exclude '*.pyc' \
     software/simulator/public/ "${PI_TARGET}:${STAGE}/simulator/"
 
+# rsync media (audio backdrops, etc.) — gitignored, may be large.
+# Only sync if the folder exists locally; install.sh skips the copy
+# if the staging media/ isn't there.
+if [ -d media ]; then
+    rsync -az --delete --exclude '.DS_Store' \
+        media/ "${PI_TARGET}:${STAGE}/media/"
+fi
+
 # Run install (idempotent). Pass AP creds via stdin so they don't end up
 # in argv / process listings or persist on disk on the Pi.
 ssh "$PI_TARGET" "sudo bash -s" <<EOF

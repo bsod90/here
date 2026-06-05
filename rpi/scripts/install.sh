@@ -169,6 +169,13 @@ if [ -d "$STAGE/simulator" ]; then
     rsync -a --delete --exclude '__pycache__' --exclude '*.pyc' \
         "$STAGE/simulator/" "$APP/sim/"
 fi
+# Audio + other media land at /opt/here/media/ — read by the AudioPlayer
+# at start (config.audio.media_dir). Gitignored upstream, so this is the
+# only place the files exist on the Pi.
+if [ -d "$STAGE/media" ]; then
+    mkdir -p "$APP/media"
+    rsync -a --delete "$STAGE/media/" "$APP/media/"
+fi
 chown -R "$USER_HERE":"$USER_HERE" "$APP"
 
 # ---------------------------------------------------------------------
