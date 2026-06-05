@@ -27,6 +27,7 @@ from pathlib import Path
 
 from animations import breathing as _breathing
 from animations import standby as _standby
+from animations import flower as _flower
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +76,14 @@ class Playground:
         def standby_adapter(frame, time_ms, state):
             _standby.render(frame, time_ms, self._config.get("standby") or {}, state)
 
+        def flower_adapter(frame, time_ms, state):
+            cfg = self._config.get("playground") or {}
+            _flower.render(frame, time_ms, cfg.get("flower") or {}, state)
+
         return {
             "breathing": ("Breathing", breathing_adapter),
             "standby":   ("Standby (stars)", standby_adapter),
+            "flower":    ("Flower (4 petals)", flower_adapter),
         }
 
     def animation_list(self) -> list[dict]:
