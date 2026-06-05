@@ -64,6 +64,13 @@ class ScaleConfig:
     # Auto-occupancy.
     auto_engage: bool = True
     threshold_grams: float = 15000.0
+    # Dwell on both edges of the threshold so single-sample noise on
+    # one leg can't flip the bench state:
+    #   engage_seconds  — weight must sit ≥ threshold continuously
+    #                     for this long before switching to occupied.
+    #   release_seconds — weight must sit  < threshold continuously
+    #                     for this long before switching to idle.
+    engage_seconds: float = 5.0
     release_seconds: float = 60.0
     occupied_mode: str = "breathing"
     idle_mode: str = "standby"
@@ -104,6 +111,7 @@ class ScaleConfig:
             "sign": list(self.sign),
             "auto_engage": self.auto_engage,
             "threshold_grams": self.threshold_grams,
+            "engage_seconds": self.engage_seconds,
             "release_seconds": self.release_seconds,
             "occupied_mode": self.occupied_mode,
             "idle_mode": self.idle_mode,
@@ -170,9 +178,13 @@ class ScaleSensor:
         self._persist = persist_cb
         self._lock = threading.Lock()
         self._legs: list[LegReading] = [LegReading(), LegReading()]
-        # State-machine bookkeeping.
+        # State-machine bookkeeping. Both dwell timers are timestamps
+        # of when the threshold was last crossed (monotonic). They get
+        # reset when the signal recovers within the dwell window —
+        # noise on one leg can't trip the state.
         self._occupied = False
-        self._empty_since: Optional[float] = None
+        self._above_since: Optional[float] = None     # → switch to occupied
+        self._empty_since: Optional[float] = None     # → switch to idle
         self._running = False
         self._chip_handle: Optional[int] = None
         self._sensors: list[_HX711] = []
@@ -232,6 +244,7 @@ class ScaleSensor:
                 "auto_engage": self.cfg.auto_engage,
                 "weight_overlay": self.cfg.weight_overlay,
                 "threshold_grams": self.cfg.threshold_grams,
+                "engage_seconds": self.cfg.engage_seconds,
                 "release_seconds": self.cfg.release_seconds,
                 "occupied_mode": self.cfg.occupied_mode,
                 "idle_mode": self.cfg.idle_mode,
@@ -260,7 +273,7 @@ class ScaleSensor:
         changed = False
         with self._lock:
             for k in ("enabled", "auto_engage", "weight_overlay",
-                      "threshold_grams", "release_seconds",
+                      "threshold_grams", "engage_seconds", "release_seconds",
                       "occupied_mode", "idle_mode"):
                 if k not in kw or kw[k] is None:
                     continue
@@ -352,8 +365,9 @@ class ScaleSensor:
         while self._running:
             time.sleep(STATE_TICK_S)
             if not self.cfg.enabled or not self.cfg.auto_engage:
-                # Reset empty-since timer so we don't trip immediately on
-                # re-enable from a stale state.
+                # Drop both dwell timers so a re-enable doesn't trip
+                # immediately on stale state.
+                self._above_since = None
                 self._empty_since = None
                 continue
             with self._lock:
@@ -363,23 +377,36 @@ class ScaleSensor:
                 continue
             now = time.monotonic()
             if total >= self.cfg.threshold_grams:
+                # We're above threshold. Cancel any pending "going-idle"
+                # timer and start (or continue) the engage dwell.
                 self._empty_since = None
                 if not self._occupied:
-                    self._occupied = True
-                    self._safe_switch(
-                        self.cfg.occupied_mode,
-                        f"scale: occupied ({total:.0f}g ≥ {self.cfg.threshold_grams:.0f}g)",
-                    )
+                    if self._above_since is None:
+                        self._above_since = now
+                    elif now - self._above_since >= self.cfg.engage_seconds:
+                        self._occupied = True
+                        self._above_since = None
+                        self._safe_switch(
+                            self.cfg.occupied_mode,
+                            f"scale: occupied ({total:.0f}g ≥ "
+                            f"{self.cfg.threshold_grams:.0f}g for "
+                            f"{self.cfg.engage_seconds:.0f}s)",
+                        )
             else:
-                if self._occupied and self._empty_since is None:
-                    self._empty_since = now
-                if self._occupied and self._empty_since is not None:
-                    if now - self._empty_since >= self.cfg.release_seconds:
+                # Below threshold. Cancel the engage dwell — any noise
+                # spike that took us above just needs to fall back here
+                # to be ignored.
+                self._above_since = None
+                if self._occupied:
+                    if self._empty_since is None:
+                        self._empty_since = now
+                    elif now - self._empty_since >= self.cfg.release_seconds:
                         self._occupied = False
                         self._empty_since = None
                         self._safe_switch(
                             self.cfg.idle_mode,
-                            f"scale: idle ({self.cfg.release_seconds:.0f}s below threshold)",
+                            f"scale: idle ({self.cfg.release_seconds:.0f}s "
+                            f"below threshold)",
                         )
 
     def _safe_switch(self, mode: str, reason: str) -> None:
