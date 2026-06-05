@@ -30,6 +30,7 @@ apt-get update -qq
 apt-get install -y --no-install-recommends \
     python3-venv python3-pip rsync \
     avahi-daemon ffmpeg alsa-utils \
+    libportaudio2 \
     swig python3-dev liblgpio-dev \
     >/dev/null
 

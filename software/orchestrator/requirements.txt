@@ -2,8 +2,10 @@ fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 numpy>=1.24.0
 python-osc>=1.8.0
-# Live (gapless) audio volume: we nudge ffmpeg's azmq filter over a ZMQ
-# REQ socket instead of restarting the player.
+# In-memory audio mixer output (DAW-style: preloaded samples, real-time
+# callback, per-track gain ramps). Needs the libportaudio2 system lib
+# (installed by install.sh). pyzmq is no longer used by the audio path.
+sounddevice>=0.4.6
 pyzmq>=26.0.0
 # HX711 scale (Pi-only; pip install no-ops cleanly on macOS for dev).
 lgpio>=0.2.2.0; sys_platform == "linux"
