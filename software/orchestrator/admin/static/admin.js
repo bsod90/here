@@ -3495,8 +3495,14 @@ init();
   const pg = {
     snap: null, lanes: [], timeline: [],
     canvas: null, ctx: null, wired: false,
-    totalSec: 60, drag: null,
+    totalSec: 60, minSec: 60, drag: null,
     playing: false, playStartMs: 0,
+    cueSec: 0,            // where ▶ starts; set by clicking the ruler
+    withRec: false,       // last play mode (kept across seeks)
+    recDur: 0,            // uploaded recording length (drawn as a strip)
+    seqDur: 0,            // server-computed sequence end (incl. fades/rec)
+    defaultFade: 1.5,     // server default clip ease (for drawing fades)
+    pollTimer: null,      // server-truth poll while playing
   };
 
   async function pgPost(path, body) {
@@ -3513,6 +3519,13 @@ init();
     if (!s || s.error) return;
     pg.snap = s; pg.lanes = s.animations || []; pg.timeline = s.timeline || [];
     pg.playing = !!s.playing;
+    pg.seqDur = s.duration_sec || 0;
+    pg.defaultFade = (s.default_fade_sec != null) ? s.default_fade_sec : 1.5;
+    pg.recDur = (s.recording && s.recording.loaded) ? s.recording.duration_sec : 0;
+    updateTotalSec();
+    if (pg.playing && s.position_sec != null) {
+      pg.playStartMs = performance.now() - s.position_sec * 1000;
+    }
     renderTriggerButtons();
     renderRecording();
     sizeCanvas(); drawTimeline();
@@ -3542,6 +3555,13 @@ init();
     const st = document.getElementById('pg-rec-status');
     if (st) st.textContent = pg.snap && pg.snap.recording_file
       ? `loaded: ${pg.snap.recording_file}` : 'no recording uploaded';
+  }
+
+  // The canvas always shows at least the dropdown length, stretching to
+  // fit the recording / sequence end so nothing falls off the edge.
+  function updateTotalSec() {
+    const need = Math.max(pg.minSec, pg.seqDur, pg.recDur);
+    pg.totalSec = Math.max(10, Math.ceil(need / 10) * 10);
   }
 
   // ── Timeline canvas ──────────────────────────────────────────
@@ -3581,18 +3601,57 @@ init();
       ctx.fillText(a.label.slice(0, 14), LABEL_W - 6, y + ROW_H / 2);
       ctx.textAlign = 'left';
     });
-    // Clips.
+    // Recording strip — how far Nadia's audio extends. Clips should
+    // cover this; the bare orange tail is what's still uncovered.
+    if (pg.recDur > 0) {
+      ctx.fillStyle = '#e6a23c'; ctx.globalAlpha = 0.9;
+      ctx.fillRect(secToX(0), RULER_H - 5, pg.recDur * pxPerSec(), 4);
+      ctx.globalAlpha = 1;
+    }
+    // Clips — with their ease ramps: attack triangle inside the head,
+    // translucent release tail extending past the end (that's where a
+    // butted neighbor crossfades in).
     pg.timeline.forEach(clip => {
       const li = pg.lanes.findIndex(l => l.id === clip.animation);
       if (li < 0) return;
+      const fi = (clip.fade_in_sec != null) ? clip.fade_in_sec : pg.defaultFade;
+      const fo = (clip.fade_out_sec != null) ? clip.fade_out_sec : pg.defaultFade;
       const x = secToX(clip.start_sec), w = Math.max(3, clip.duration_sec * pxPerSec());
       const y = laneTop(li) + 3, h = ROW_H - 6;
-      ctx.fillStyle = COLORS[li % COLORS.length];
-      ctx.globalAlpha = 0.85; ctx.fillRect(x, y, w, h); ctx.globalAlpha = 1;
+      const col = COLORS[li % COLORS.length];
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.85; ctx.fillRect(x, y, w, h);
+      // Release tail (past the clip's end).
+      if (fo > 0) {
+        const fw = fo * pxPerSec();
+        const grad = ctx.createLinearGradient(x + w, 0, x + w + fw, 0);
+        grad.addColorStop(0, col); grad.addColorStop(1, 'transparent');
+        ctx.globalAlpha = 0.4; ctx.fillStyle = grad;
+        ctx.fillRect(x + w, y, fw, h);
+      }
+      ctx.globalAlpha = 1;
+      // Attack ramp drawn as a darker wedge over the head.
+      if (fi > 0) {
+        const fw = Math.min(w, fi * pxPerSec());
+        ctx.fillStyle = '#0006';
+        ctx.beginPath();
+        ctx.moveTo(x, y); ctx.lineTo(x + fw, y); ctx.lineTo(x, y + h);
+        ctx.closePath(); ctx.fill();
+      }
       ctx.strokeStyle = '#0008'; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.fillStyle = '#000a'; ctx.font = '9px Arial';
       ctx.fillText(`${clip.duration_sec.toFixed(1)}s`, x + 3, y + h / 2);
     });
+    // Cue marker (▶ starts here; click the ruler to move it).
+    if (pg.cueSec > 0) {
+      const x = secToX(Math.min(pg.cueSec, pg.totalSec));
+      ctx.strokeStyle = '#e6a23c'; ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#e6a23c';
+      ctx.beginPath(); ctx.moveTo(x - 4, 1); ctx.lineTo(x + 4, 1); ctx.lineTo(x, 8);
+      ctx.closePath(); ctx.fill();
+    }
     // Playhead.
     if (pg.playing) {
       const pos = (performance.now() - pg.playStartMs) / 1000;
@@ -3622,6 +3681,9 @@ init();
 
   function onDown(e) {
     const { x, y } = evtXY(e);
+    // Clicking the ruler sets the cue point — and jumps there live if
+    // a sequence is already playing.
+    if (y < RULER_H && x >= LABEL_W) { seekTo(xToSec(x)); return; }
     if (x < LABEL_W || y < RULER_H) return;
     const li = laneAtY(y);
     if (li < 0 || li >= pg.lanes.length) return;
@@ -3659,12 +3721,64 @@ init();
     if (hit) { pg.timeline = pg.timeline.filter(c => c !== hit.clip); drawTimeline(); saveTimeline(); }
   }
   async function saveTimeline() {
-    const clean = pg.timeline.map(c => ({
-      animation: c.animation,
-      start_sec: Math.round(c.start_sec * 100) / 100,
-      duration_sec: Math.round(c.duration_sec * 100) / 100,
-    }));
+    const clean = pg.timeline.map(c => {
+      const out = {
+        animation: c.animation,
+        start_sec: Math.round(c.start_sec * 100) / 100,
+        duration_sec: Math.round(c.duration_sec * 100) / 100,
+      };
+      // Preserve per-clip ease overrides if a clip carries them.
+      if (c.fade_in_sec != null) out.fade_in_sec = c.fade_in_sec;
+      if (c.fade_out_sec != null) out.fade_out_sec = c.fade_out_sec;
+      return out;
+    });
     try { await api('playground', { method: 'PUT', body: JSON.stringify({ timeline: clean }) }); } catch {}
+  }
+
+  // ── Cue + seek ────────────────────────────────────────────────
+  async function seekTo(sec) {
+    pg.cueSec = Math.max(0, Math.round(sec * 10) / 10);
+    if (pg.playing) {
+      await pgPost('/play', { with_recording: pg.withRec, start_sec: pg.cueSec });
+      startPlayhead(pg.cueSec);
+    }
+    updateInfo(); drawTimeline();
+  }
+
+  function updateInfo() {
+    const info = document.getElementById('pg-seq-info');
+    if (!info) return;
+    const cue = pg.cueSec > 0 ? ` · cue ${pg.cueSec.toFixed(1)}s` : '';
+    info.textContent = (pg.playing ? 'playing' : 'stopped') + cue;
+  }
+
+  // ── Playhead: local clock anchored to server truth ────────────
+  function startPlayhead(posSec) {
+    pg.playing = true;
+    pg.playStartMs = performance.now() - (posSec || 0) * 1000;
+    updateInfo();
+    const tick = () => {
+      if (!pg.playing) return;
+      drawTimeline(); requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+    // Poll the server while playing: re-anchor the playhead (render
+    // thread is the time authority) and notice the sequence ending.
+    if (pg.pollTimer) clearInterval(pg.pollTimer);
+    pg.pollTimer = setInterval(async () => {
+      let s; try { s = await api('playground'); } catch { return; }
+      if (!s || s.error) return;
+      if (!s.playing) { stopLocal(); return; }
+      if (s.position_sec != null) {
+        pg.playStartMs = performance.now() - s.position_sec * 1000;
+      }
+    }, 750);
+  }
+
+  function stopLocal() {
+    pg.playing = false;
+    if (pg.pollTimer) { clearInterval(pg.pollTimer); pg.pollTimer = null; }
+    updateInfo(); drawTimeline(); renderTriggerButtons();
   }
 
   function pgInit() {
@@ -3678,25 +3792,17 @@ init();
     pg.canvas.addEventListener('dblclick', onDbl);
 
     const lenSel = document.getElementById('pg-length');
-    if (lenSel) { pg.totalSec = parseInt(lenSel.value, 10) || 60;
-      lenSel.onchange = () => { pg.totalSec = parseInt(lenSel.value, 10) || 60; sizeCanvas(); drawTimeline(); }; }
+    if (lenSel) { pg.minSec = parseInt(lenSel.value, 10) || 60; updateTotalSec();
+      lenSel.onchange = () => { pg.minSec = parseInt(lenSel.value, 10) || 60;
+        updateTotalSec(); sizeCanvas(); drawTimeline(); }; }
 
-    const info = document.getElementById('pg-seq-info');
-    const setInfo = t => { if (info) info.textContent = t; };
-    const startPlayhead = () => {
-      pg.playing = true; pg.playStartMs = performance.now(); setInfo('playing');
-      const tick = () => {
-        if (!pg.playing) return;
-        const pos = (performance.now() - pg.playStartMs) / 1000;
-        if (pos > pg.totalSec) { stopLocal(); return; }
-        drawTimeline(); requestAnimationFrame(tick);
-      };
-      requestAnimationFrame(tick);
+    const play = async (withRec) => {
+      pg.withRec = withRec;
+      await pgPost('/play', { with_recording: withRec, start_sec: pg.cueSec });
+      startPlayhead(pg.cueSec); renderTriggerButtons();
     };
-    const stopLocal = () => { pg.playing = false; setInfo('stopped'); drawTimeline(); renderTriggerButtons(); };
-
-    document.getElementById('pg-play').onclick = async () => { await pgPost('/play', { with_recording: false }); startPlayhead(); renderTriggerButtons(); };
-    document.getElementById('pg-play-rec').onclick = async () => { await pgPost('/play', { with_recording: true }); startPlayhead(); renderTriggerButtons(); };
+    document.getElementById('pg-play').onclick = () => play(false);
+    document.getElementById('pg-play-rec').onclick = () => play(true);
     document.getElementById('pg-stop').onclick = async () => { await pgPost('/stop'); stopLocal(); };
     document.getElementById('pg-clear').onclick = async () => {
       if (!confirm('Remove all clips from the timeline?')) return;

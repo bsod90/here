@@ -22,6 +22,17 @@ animation ideas without risking the rest of the app.
    - She draws **rectangles** = which animation plays, when, for how long.
    - **Play** the sequence with or without the meditation recording.
    - Remembers the sequence (persisted); has **quick cleanup** buttons.
+   - **v2 (the "record first, cover with clips" workflow):**
+     - Clips **ease in/out** (default 1.5 s); butted clips **crossfade**
+       (a clip's release tail extends past its end), gaps fade to dark,
+       overlaps blend. Per-clip `fade_in_sec`/`fade_out_sec` overrides.
+     - The **recording plays through the audio mixer** (one-shot clip):
+       starts within ~23 ms of the animations and the sequence runs
+       until the recording ends, so the voice is never cut off. Its
+       length is drawn as an **orange strip** under the ruler — the bare
+       tail is what's still uncovered by animation clips.
+     - **Playhead + cue**: click the ruler to set the cue (jumps live if
+       playing); ▶ plays from the cue. Playhead is server-anchored.
 5. **New animations on request**: Claude adds animation implementations +
    trigger buttons + sequencer lanes as Nadia describes ideas.
 6. **Everything persists** across restarts (settings + sequence).

@@ -56,6 +56,8 @@ Anything not in the above lists is stale and can probably be removed.
 """
 import json
 import copy
+import os
+import tempfile
 import threading
 from pathlib import Path
 
@@ -232,9 +234,15 @@ DEFAULT_CONFIG = {
     # Nadia's Playground — isolated experimentation enclave (see
     # docs/nadia_playground.md). Persists her seconds-timeline + recording
     # choice. Kept separate so it can't affect breathing/standby/scene.
+    # Per-animation tuning sections (flower, welcome, talking, chill,
+    # winddown) are optional overrides on top of each module's DEFAULTS.
     "playground": {
-        # timeline clips: [{animation, start_sec, duration_sec}]
+        # timeline clips: [{animation, start_sec, duration_sec,
+        #                   fade_in_sec?, fade_out_sec?}]
         "timeline":        [],
+        # clip ease used when a clip doesn't set its own fades; butted
+        # clips crossfade over this long (see playground.py docstring)
+        "default_fade_sec": 1.5,
         # uploaded meditation recording filename (under media_dir/playground/)
         "recording_file":  None,
     },
@@ -393,4 +401,24 @@ class ConfigManager:
             self._save()
 
     def _save(self):
-        self._path.write_text(json.dumps(self._config, indent=2))
+        # Atomic write: config is saved on every mode change (including
+        # scale auto-engage), and a power cut mid-write would otherwise
+        # truncate the file and lose all settings. Write to a temp file
+        # in the same directory, fsync, then rename over the original —
+        # readers always see either the old or the new complete file.
+        data = json.dumps(self._config, indent=2)
+        directory = self._path.parent if str(self._path.parent) else Path(".")
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(directory), prefix=self._path.name + ".", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self._path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise

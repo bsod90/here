@@ -51,7 +51,12 @@ def register(app: FastAPI, playground, audio, config, engine) -> None:
             return _disabled()
         body = await safe_json(request)
         engine.mode = "playground"
-        playground.play(with_recording=bool(body.get("with_recording", False)))
+        try:
+            start_sec = max(0.0, float(body.get("start_sec", 0.0)))
+        except (TypeError, ValueError):
+            start_sec = 0.0
+        playground.play(with_recording=bool(body.get("with_recording", False)),
+                        start_sec=start_sec)
         return playground.snapshot()
 
     @app.post("/api/playground/stop")
@@ -96,6 +101,9 @@ def register(app: FastAPI, playground, audio, config, engine) -> None:
         pg = config.get("playground") or {}
         pg["recording_file"] = name
         config.set("playground", pg)
+        # Hand the new file to the mixer right away (decodes in the
+        # background) so play is instant once it's loaded.
+        playground.reload_recording()
         return playground.snapshot()
 
     @app.post("/api/playground/recording/play")

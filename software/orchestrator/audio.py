@@ -24,6 +24,15 @@ Public API (unchanged, so callers don't change):
     start() / stop()                  → open / close the audio stream
     snapshot()                        → state dict for the admin panel
     add_listener(loop, queue) / remove_listener(id)  → browser monitor
+
+One-shot clips (e.g. Nadia's meditation recording) ride the same mixer
+as non-looping tracks: they start within one audio block of play_clip()
+(~23 ms — tight enough to stay visibly in sync with the animations),
+expose a sample-accurate playhead, and stop themselves at the end:
+    register_clip(name, path)         → decode into RAM (background)
+    play_clip(name, start_sec)        → start / seek (gapless re-ramp)
+    stop_clip(name)                   → ramp out + rewind
+    clip_status(name)                 → {loaded, playing, position, duration}
 """
 from __future__ import annotations
 
@@ -82,6 +91,8 @@ class AudioPlayer:
                 "enabled": bool(spec.get("enabled", False)),
                 "volume":  max(0.0, min(1.0, float(spec.get("volume", 0.5)))),
                 "loop":    bool(spec.get("loop", True)),
+                "clip":    False,    # one-shot clips are registered later
+                "path":    None,     # absolute source path (clips only)
                 "data":    None,
                 "gain":    0.0,
                 "pos":     0,
@@ -109,7 +120,7 @@ class AudioPlayer:
     def _load_all(self) -> None:
         for name, tr in list(self._tracks.items()):
             path = self.media_dir / tr["file"]
-            if not path.exists():
+            if not tr["file"] or not path.is_file():
                 logger.warning("audio: track %r file missing: %s", name, path)
                 continue
             data = self._decode(path)
@@ -156,6 +167,84 @@ class AudioPlayer:
         """Back-compat alias for the 'ocean' track."""
         self.set_track(_OCEAN, enabled=enabled, volume=volume)
 
+    # ── One-shot clips (meditation recording etc.) ──────────
+    def register_clip(self, name: str, path: str | Path,
+                      volume: float = 1.0) -> None:
+        """Decode a file into RAM as a non-looping clip track. Decoding
+        runs in a background thread (recordings can be minutes long);
+        clip_status(name)["loaded"] flips when it's ready. Re-registering
+        the same path is a no-op; a new path replaces the old clip."""
+        path = Path(path)
+        with self._lock:
+            tr = self._tracks.get(name)
+            if tr is not None and tr.get("path") == str(path) and tr["data"] is not None:
+                return
+            self._tracks[name] = {
+                "file":    path.name,
+                "label":   name.title(),
+                "enabled": False,
+                "volume":  max(0.0, min(1.0, float(volume))),
+                "loop":    False,
+                "clip":    True,
+                "path":    str(path),
+                "data":    None,
+                "gain":    0.0,
+                "pos":     0,
+            }
+        threading.Thread(target=self._load_clip, args=(name, path),
+                         name=f"audio-clip-{name}", daemon=True).start()
+
+    def _load_clip(self, name: str, path: Path) -> None:
+        if not path.is_file():
+            logger.warning("audio: clip %r file missing: %s", name, path)
+            return
+        data = self._decode(path)
+        if data is None:
+            return
+        with self._lock:
+            tr = self._tracks.get(name)
+            # Guard against a re-register racing the decode.
+            if tr is not None and tr.get("path") == str(path):
+                tr["data"] = data
+                logger.info("audio: loaded clip %r (%.1f s)", name,
+                            len(data) / _SR)
+
+    def play_clip(self, name: str, start_sec: float = 0.0) -> None:
+        """Start (or seek) a one-shot clip. Restarting an already-playing
+        clip re-ramps the gain over ~80 ms so the splice doesn't click."""
+        with self._lock:
+            tr = self._tracks.get(name)
+            if tr is None or not tr.get("clip"):
+                logger.warning("audio: unknown clip %r", name)
+                return
+            tr["pos"] = max(0, int(float(start_sec) * _SR))
+            tr["gain"] = 0.0
+            tr["enabled"] = True
+
+    def stop_clip(self, name: str) -> None:
+        # Disable only — the callback ramps the gain out over ~80 ms from
+        # the current position (resetting pos here would replay the head
+        # of the clip during the ramp-out).
+        with self._lock:
+            tr = self._tracks.get(name)
+            if tr is None or not tr.get("clip"):
+                return
+            tr["enabled"] = False
+
+    def clip_status(self, name: str) -> dict | None:
+        with self._lock:
+            tr = self._tracks.get(name)
+            if tr is None or not tr.get("clip"):
+                return None
+            n = len(tr["data"]) if tr["data"] is not None else 0
+            return {
+                "file":         tr["file"],
+                "loaded":       tr["data"] is not None,
+                "playing":      bool(tr["enabled"]) and tr["pos"] < max(n, 1),
+                "position_sec": tr["pos"] / _SR,
+                "duration_sec": n / _SR,
+            }
+
     def start(self) -> None:
         """Open the output stream (idempotent)."""
         with self._lock:
@@ -195,8 +284,18 @@ class AudioPlayer:
         with self._lock:
             with self._sub_lock:
                 listeners = len(self._subs)
-            tracks = {}
+            tracks, clips = {}, {}
             for name, tr in self._tracks.items():
+                if tr.get("clip"):
+                    n = len(tr["data"]) if tr["data"] is not None else 0
+                    clips[name] = {
+                        "file":         tr["file"],
+                        "loaded":       tr["data"] is not None,
+                        "playing":      bool(tr["enabled"]) and tr["pos"] < max(n, 1),
+                        "position_sec": tr["pos"] / _SR,
+                        "duration_sec": n / _SR,
+                    }
+                    continue
                 tracks[name] = {
                     "file":    tr["file"],
                     "label":   tr["label"],
@@ -206,6 +305,7 @@ class AudioPlayer:
                 }
             snap = {
                 "tracks":            tracks,
+                "clips":             clips,
                 "running":           self._running,
                 "monitor_listeners": listeners,
             }
@@ -242,13 +342,29 @@ class AudioPlayer:
                 g1 = g0
             n = len(data)
             pos = tr["pos"]
-            idx = (np.arange(frames) + pos) % n   # wraps = seamless loop
-            seg = data[idx]
+            if tr["loop"]:
+                idx = (np.arange(frames) + pos) % n   # wraps = seamless loop
+                seg = data[idx]
+                new_pos = (pos + frames) % n
+            else:
+                # One-shot clip: play the remaining samples, pad the tail
+                # with silence, and switch the track off when it ends.
+                if pos >= n:
+                    tr["enabled"] = False
+                    tr["gain"] = 0.0
+                    continue
+                end = min(n, pos + frames)
+                seg = np.zeros((frames, _CHANNELS), dtype=np.float32)
+                seg[:end - pos] = data[pos:end]
+                new_pos = end
+                if end >= n:               # ran off the end this block
+                    tr["enabled"] = False
+                    g1 = 0.0
             gains = np.linspace(g0, g1, frames, endpoint=False,
                                 dtype=np.float32)[:, None]
             mix += seg * gains
             tr["gain"] = g1
-            tr["pos"] = (pos + frames) % n
+            tr["pos"] = new_pos
         np.clip(mix, -1.0, 1.0, out=mix)
         outdata[:] = mix
         # Tee to the monitor encoder (drop if it's backed up — monitor is
