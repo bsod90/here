@@ -52,6 +52,12 @@ from animations import welcome as _welcome
 from animations import chill as _chill
 from animations import winddown as _winddown
 from animations import talking as _talking
+from animations import lotus as _lotus
+from animations import dandelion as _dandelion
+from animations import sunflower as _sunflower
+from animations import meadow as _meadow
+from animations import waterlily as _waterlily
+from animations import moodflower as _moodflower
 
 logger = logging.getLogger(__name__)
 
@@ -117,13 +123,20 @@ class Playground:
             return adapter
 
         return {
-            "breathing": ("Breathing", breathing_adapter),
-            "standby":   ("Standby (stars)", standby_adapter),
-            "flower":    ("Flower (4 petals)", pg_adapter(_flower, "flower")),
-            "welcome":   ("Welcome (bloom)", pg_adapter(_welcome, "welcome")),
-            "talking":   ("Talking (soft glow)", pg_adapter(_talking, "talking")),
-            "chill":     ("Chill (aurora)", pg_adapter(_chill, "chill")),
-            "winddown":  ("Wind-down (settle)", pg_adapter(_winddown, "winddown")),
+            "breathing":  ("Breathing", breathing_adapter),
+            "standby":    ("Standby (stars)", standby_adapter),
+            "flower":     ("Flower (4 petals)", pg_adapter(_flower, "flower")),
+            "welcome":    ("Welcome (bloom)", pg_adapter(_welcome, "welcome")),
+            "talking":    ("Talking (sound waves)", pg_adapter(_talking, "talking")),
+            "chill":      ("Chill (aurora)", pg_adapter(_chill, "chill")),
+            "winddown":   ("Wind-down (settle)", pg_adapter(_winddown, "winddown")),
+            # The flower garden 🌸 — see each module's DEFAULTS for knobs.
+            "lotus":      ("Lotus (unfolding)", pg_adapter(_lotus, "lotus")),
+            "sunflower":  ("Sunflower (spiral)", pg_adapter(_sunflower, "sunflower")),
+            "meadow":     ("Night meadow", pg_adapter(_meadow, "meadow")),
+            "waterlily":  ("Water lily (pond)", pg_adapter(_waterlily, "waterlily")),
+            "dandelion":  ("Dandelion (let go)", pg_adapter(_dandelion, "dandelion")),
+            "moodflower": ("Mood flower (shimmer)", pg_adapter(_moodflower, "moodflower")),
         }
 
     def animation_list(self) -> list[dict]:

@@ -31,6 +31,14 @@ DEFAULTS = {
     "halo_width": 3.0,       # how wide the halo band is
     "halo_brightness": 0.18, # very faint by default
 
+    # --- Sound-wave shimmer: concentric waves radiating from the glow,
+    # like the voice rippling across the floor. They breathe with the
+    # same swell as the glow (louder presence = brighter waves). ---
+    "shimmer_amount": 0.16,  # brightness of the waves (0 = off)
+    "shimmer_spacing": 5.5,  # LEDs between wave crests
+    "shimmer_speed": 3.0,    # LEDs per second the waves travel outward
+    "shimmer_reach": 20.0,   # waves die out by this distance
+
     # --- Colors ---
     "color":      [120, 150, 255],   # cool calm blue
     "halo_color": [90, 80, 200],
@@ -74,6 +82,22 @@ def render(frame: bytearray, time_ms: float, params: dict,
     sigma = radius * max(0.2, float(p["softness"]))
     glow = np.exp(-(d * d) / (2.0 * sigma * sigma)) * level
     rgb = glow[:, None] * np.array(p["color"], dtype=np.float32)
+
+    # Sound-wave shimmer: additive concentric waves traveling outward.
+    # The center stays calm (waves start past the glow's core) and the
+    # wave brightness rides the same `level` swell as the glow, so it
+    # reads as the voice radiating, not a separate effect.
+    amt = float(p["shimmer_amount"])
+    if amt > 0.0:
+        spacing = max(1.0, float(p["shimmer_spacing"]))
+        speed = float(p["shimmer_speed"])
+        reach = max(radius + 1.0, float(p["shimmer_reach"]))
+        wave = 0.5 + 0.5 * np.sin(2.0 * np.pi * (d - t * speed) / spacing)
+        wave = wave * wave                          # crisper crests, darker troughs
+        band = (np.clip((d - radius * 0.7) / radius, 0.0, 1.0)
+                * np.clip((reach - d) / (reach * 0.45), 0.0, 1.0))
+        rgb += (amt * level * wave * band)[:, None] \
+            * np.array(p["color"], dtype=np.float32)
 
     # Faint halo ring, fixed in place (the still anchor around the swell).
     if p.get("halo"):

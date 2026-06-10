@@ -243,7 +243,9 @@ class TestSnapshot(PlaygroundFixture):
             self.assertIn(key, snap)
         ids = [a["id"] for a in snap["animations"]]
         for builtin in ("breathing", "standby", "flower", "welcome",
-                        "talking", "chill", "winddown"):
+                        "talking", "chill", "winddown", "lotus",
+                        "sunflower", "meadow", "waterlily", "dandelion",
+                        "moodflower"):
             self.assertIn(builtin, ids)
 
     def test_position_none_when_stopped(self):
@@ -255,7 +257,8 @@ class TestSnapshot(PlaygroundFixture):
 
     def test_builtin_animations_render_without_error(self):
         for anim in ("breathing", "standby", "flower", "welcome",
-                     "talking", "chill", "winddown"):
+                     "talking", "chill", "winddown", "lotus", "sunflower",
+                     "meadow", "waterlily", "dandelion", "moodflower"):
             self.pg.trigger(anim)
             for t in (0.0, 500.0, 2_000.0):
                 self.render(t)
