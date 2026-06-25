@@ -186,10 +186,11 @@ Assumptions: art runs 24/7. Daytime (6am–6pm) = voice-only. Nighttime (6pm–6
 
 ### Battery Runtime (no solar)
 
+Confirmed config: **2× 48V 50Ah in parallel** (5,120Wh).
+
 | Battery | Capacity (usable 80%) | Runtime |
 |---------|----------------------|---------|
-| 12V 100Ah (1,280Wh) | 1,024Wh | ~2.8 days |
-| 48V 50Ah (2,560Wh) | 2,048Wh | ~5.7 days |
+| 2× 48V 50Ah (5,120Wh) | 4,096Wh | ~7.9 days |
 
 ### Solar Balance
 
@@ -203,15 +204,12 @@ Solar comfortably covers daily usage with ~2.3× margin.
 
 ### Battery-Only Option (no solar)
 
-Option to borrow a second battery. With ~518Wh/day (+15% conversion losses ≈ 596Wh/day), 7-day target = ~4,172Wh needed.
+With ~518Wh/day (+15% conversion losses ≈ 596Wh/day), 7-day target = ~4,172Wh needed.
 
 | Setup | Usable capacity (80% DoD) | Runtime |
 |-------|---------------------------|---------|
-| 1× 12V 100Ah (1,280Wh) | 1,024Wh | ~1.7 days |
-| 2× 12V 100Ah (2,560Wh) | 2,048Wh | ~3.4 days |
-| 1× 48V 50Ah (2,560Wh) | 2,048Wh | ~3.4 days |
 | 2× 48V 50Ah (5,120Wh) | 4,096Wh | **~6.9 days** |
 
-**Verdict:** 2× 48V batteries can just barely do 7 days battery-only. Solar panel recommended as backup. Decision TBD.
+**Verdict:** Our 2× 48V bank just barely does 7 days battery-only. Solar panel recommended as backup.
 
 > **Note:** Conversion losses (48V→12V→5V or 12V→5V) add ~10-15% overhead, factored in above.
