@@ -56,24 +56,49 @@ WLED on ESP32 supports up to 1,000 LEDs per channel, so this is within limits.
 
 | Item | Qty | Status | Notes |
 |------|-----|--------|-------|
-| [ECO-WORTHY LiFePO4 battery](https://www.amazon.com/dp/B09W245MXD) | 1 | Have | See specs below — verify 12V vs 48V variant |
+| [ECO-WORTHY 48V 50Ah LiFePO4 battery](https://www.amazon.com/dp/B09W245MXD) | 2 | Have | 51.2V nominal, wired **in parallel** (48V, 100Ah, 5,120Wh total) |
+| Renogy Smart Shunt | 1 | Have | Battery monitor for the parallel 48V bank — see shunt settings below |
 | ~200W solar panel | 1 | Have | With charge controller |
 
-### Battery Specs (from Amazon listing — 48V variant)
+### Battery Specs (confirmed: 2× 48V 50Ah, parallel)
 
-> **NOTE:** The Amazon link resolves to a **48V 50Ah (2,560Wh)** battery. If you
-> actually have the 12V 100Ah variant, update the specs below accordingly.
+We run **2× ECO-WORTHY 48V 50Ah** batteries wired **in parallel** → 48V nominal,
+**100Ah / 5,120Wh** total.
 
-- **Nominal voltage:** 51.2V (48V nominal)
-- **Capacity:** 50Ah / 2,560Wh
-- **Max continuous charge/discharge:** 50A
+- **Nominal voltage:** 51.2V (48V nominal), 16S LiFePO4
+- **Capacity (bank):** 100Ah / 5,120Wh (2× 50Ah / 2,560Wh in parallel)
+- **Max continuous charge/discharge:** 50A per battery
 - **Peak current:** 300A
-- **BMS:** Built-in 50A (overcharge, over-discharge, overcurrent, short circuit)
+- **BMS:** Built-in 50A per battery (overcharge, over-discharge, overcurrent, short circuit)
 - **Cycle life:** 3,000+ deep cycles (80% capacity retention)
 - **Charge temp:** 0°C to 55°C
 - **Discharge temp:** −20°C to 55°C
-- **Weight:** 44.75 lbs (20.3 kg)
+- **Weight:** 44.75 lbs (20.3 kg) each
 - **Terminals:** M8 screw
+
+#### Voltage thresholds (16S LiFePO4 chemistry)
+
+| State | Per cell | Pack (48V) |
+|-------|----------|------------|
+| Charge / absorption (charger target) | 3.65 V | 56–58.4 V |
+| **100% (resting, full)** | 3.40 V | **54.4 V** |
+| Nominal | 3.20 V | 51.2 V |
+| **0% (resting, empty knee)** | 3.0 V | **~48.0 V** |
+| **BMS low-voltage shutoff** | 2.5 V | **~40.0 V** |
+
+The LiFePO4 discharge curve is very flat between ~54V and ~49V — voltage is a poor
+SoC gauge in that plateau, which is why the shunt's coulomb counting matters.
+
+#### Renogy Smart Shunt settings (single shunt on the parallel bank)
+
+- **Battery type:** Lithium (LiFePO4)
+- **Battery capacity:** **100 Ah** (both batteries combined — shunt sits on the bank)
+- **Charged Voltage (100% re-sync threshold):** **55.0 V** (~1V below absorption so it's reliably reached while charging; do not use the 54.4V resting figure here)
+- **Tail Current:** 4% (~4A for the 100Ah bank)
+- **Charged Detection Time:** 3 min
+- **Discharge Floor:** 10–15% (keeps the bank well above the ~40V BMS trip)
+- **Peukert exponent:** 1.05
+- **Charge efficiency:** ~99%
 
 ### Solar
 
