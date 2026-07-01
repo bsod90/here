@@ -98,6 +98,51 @@ mkdir -p /etc/polkit-1/rules.d
 install -m 0644 "$STAGE/rpi/configs/polkit/50-here-netdev.rules" \
     /etc/polkit-1/rules.d/50-here-netdev.rules
 
+# Disable WiFi power-save on wlan0 (drops mDNS multicast / flaky assoc).
+# Persistent via NetworkManager conf.d; applied live now without dropping
+# the link (iw set is non-disruptive, unlike a radio toggle over SSH).
+mkdir -p /etc/NetworkManager/conf.d
+install -m 0644 "$STAGE/rpi/configs/NetworkManager/wifi-powersave-off.conf" \
+    /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+systemctl reload NetworkManager 2>/dev/null || true
+iw dev wlan0 set power_save off 2>/dev/null || true
+
+# Stable OTA address: the ESP fleet downloads firmware from a hardcoded
+# 192.168.1.110, but wlan0 is on DHCP and can drift after a reboot (→ OTA
+# fails fleet-wide). A NetworkManager dispatcher keeps .110 as a wlan0 alias
+# on every bring-up. Install + apply now (idempotent).
+mkdir -p /etc/NetworkManager/dispatcher.d
+install -m 0755 "$STAGE/rpi/configs/NetworkManager/dispatcher.d/90-here-ota-ip" \
+    /etc/NetworkManager/dispatcher.d/90-here-ota-ip
+ip -4 addr show dev wlan0 | grep -q "192.168.1.110/24" || \
+    ip addr add 192.168.1.110/24 dev wlan0 2>/dev/null || true
+
+# Floor-border LED strips need SPI. Enable both buses in config.txt (idempotent;
+# takes effect on next reboot):
+#   * SPI0 (dtparam=spi=on)      → /dev/spidev0.0, MOSI=GPIO10 — STABLE clock,
+#                                  the recommended bus for WS2812.
+#   * SPI1 (dtoverlay=spi1-1cs)  → /dev/spidev1.0, MOSI=GPIO20 — works, but the
+#                                  aux-SPI clock can drift under core scaling.
+BOOTCFG=/boot/firmware/config.txt
+[ -f "$BOOTCFG" ] || BOOTCFG=/boot/config.txt
+if [ -f "$BOOTCFG" ]; then
+    if ! grep -qE "^dtparam=spi=on" "$BOOTCFG"; then
+        echo "dtparam=spi=on" >> "$BOOTCFG"
+        echo "  + enabled SPI0 (reboot required)"
+    fi
+    if ! grep -qE "^dtoverlay=spi1-1cs" "$BOOTCFG"; then
+        echo "dtoverlay=spi1-1cs" >> "$BOOTCFG"
+        echo "  + enabled SPI1 (reboot required)"
+    fi
+fi
+
+# here.local self-heal: if a fast power-cycle made avahi rename to here-2,
+# reclaim "here" once the stale mDNS record expires. Idempotent install.
+install -m 0755 "$STAGE/rpi/scripts/here-mdns-reclaim.sh" \
+    /usr/local/sbin/here-mdns-reclaim
+install -m 0644 "$STAGE/rpi/configs/here-mdns-reclaim.service" \
+    /etc/systemd/system/here-mdns-reclaim.service
+
 # Boot-time AP fallback: if home WiFi STA doesn't associate within 60 s,
 # bring up the field-debug AP. Idempotent install.
 install -m 0755 "$STAGE/rpi/scripts/here-wifi-fallback.sh" \
@@ -106,6 +151,7 @@ install -m 0644 "$STAGE/rpi/configs/here-wifi-fallback.service" \
     /etc/systemd/system/here-wifi-fallback.service
 systemctl daemon-reload
 systemctl enable here-wifi-fallback.service >/dev/null
+systemctl enable here-mdns-reclaim.service >/dev/null
 
 # ---------------------------------------------------------------------
 # 5. Field-debug WiFi AP — defined but NOT auto-activated.

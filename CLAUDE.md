@@ -55,6 +55,12 @@ here/
 - Keep scripts idempotent — safe to re-run on the RPi
 - All configs should be version-controlled; no secrets in the repo
 
+## Recipes
+
+- **Adding a new meditation** (audio file + whisper transcript sidecar +
+  config registration + the Pi config-shadowing gotcha):
+  [docs/add-meditation.md](docs/add-meditation.md)
+
 ## WLED Notes
 
 - Matrix: 44x44 = 1,936 LEDs

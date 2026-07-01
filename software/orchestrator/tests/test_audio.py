@@ -320,6 +320,62 @@ class TestClips(unittest.TestCase):
         self.assertAlmostEqual(float(out[0, 0]), 0.25, places=3)
 
 
+class TestFade(unittest.TestCase):
+    """Per-track ramp time — slow crossfades for the meditation mode."""
+
+    def test_set_track_fade_sets_per_track_ramp(self):
+        p = make_player(tracks={"ocean": {"file": "o.wav"}})
+        p.set_track("ocean", volume=0.5, fade=5.0)
+        self.assertEqual(p._tracks["ocean"]["ramp_s"], 5.0)
+
+    def test_set_track_without_fade_resets_to_default(self):
+        p = make_player(tracks={"ocean": {"file": "o.wav"}})
+        p.set_track("ocean", fade=5.0)
+        p.set_track("ocean", volume=0.2)            # no fade → snappy again
+        self.assertEqual(p._tracks["ocean"]["ramp_s"], _RAMP_S)
+
+    def test_long_fade_ramps_slower_than_default(self):
+        # A 5 s fade must move the gain far less in one block than the
+        # default ~80 ms ramp would.
+        slow = make_player()
+        fast = make_player()
+        data = np.ones((_SR, _CHANNELS), dtype=np.float32)
+        inject(slow, "t", data, enabled=True, volume=1.0)
+        inject(fast, "t", data, enabled=True, volume=1.0)
+        slow.set_track("t", fade=5.0)
+        run_block(slow)
+        run_block(fast)
+        self.assertLess(slow._tracks["t"]["gain"], fast._tracks["t"]["gain"])
+
+    def test_play_clip_fade_in(self):
+        p = make_player()
+        data = np.ones((int(2 * _SR), _CHANNELS), dtype=np.float32)
+        p._tracks["rec"] = {
+            "file": "r.wav", "label": "Rec", "enabled": False, "volume": 1.0,
+            "loop": False, "clip": True, "path": "/x/r.wav",
+            "data": data, "gain": 0.0, "pos": 0, "ramp_s": _RAMP_S,
+        }
+        p.play_clip("rec", fade=5.0)
+        self.assertEqual(p._tracks["rec"]["ramp_s"], 5.0)
+        run_block(p)
+        step = _BLOCKSIZE / (5.0 * _SR)
+        self.assertLessEqual(p._tracks["rec"]["gain"], step + 1e-6)
+
+    def test_stop_clip_fade_out(self):
+        p = make_player()
+        data = np.ones((int(2 * _SR), _CHANNELS), dtype=np.float32)
+        p._tracks["rec"] = {
+            "file": "r.wav", "label": "Rec", "enabled": True, "volume": 1.0,
+            "loop": False, "clip": True, "path": "/x/r.wav",
+            "data": data, "gain": 1.0, "pos": 0, "ramp_s": _RAMP_S,
+        }
+        p.stop_clip("rec", fade=5.0)
+        self.assertEqual(p._tracks["rec"]["ramp_s"], 5.0)
+        run_block(p)
+        # One block of a 5 s ramp barely moves off full gain.
+        self.assertGreater(p._tracks["rec"]["gain"], 0.99)
+
+
 class TestMonitorLifecycle(unittest.TestCase):
 
     def test_first_listener_starts_encoder_last_stops_it(self):

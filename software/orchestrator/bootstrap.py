@@ -14,13 +14,18 @@ Adding a service:
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
 from animation_engine import AnimationEngine
 from audio import AudioPlayer
+from bench_link import BenchLink, HAS_SERIAL as bench_serial_available
+from meditation import MeditationController
+from ota import OtaService
 from osc_input import OscState, OscServer
 from playground import Playground
+from border import BorderController
 from scale import ScaleSensor, ScaleConfig
 from scene import Scene, SequenceStore, PatchStore
 from scene.animations import REGISTRY as SCENE_ANIMATION_REGISTRY
@@ -51,10 +56,14 @@ class Services:
     tap_tracker: TapTracker
     telemetry: Telemetry
     telemetry_history: TelemetryHistory
+    bench_link: BenchLink
+    ota: OtaService
     scale: ScaleSensor
     engine: AnimationEngine
     audio: AudioPlayer
+    meditation: MeditationController
     playground: Playground
+    border: BorderController
 
     def start(self) -> None:
         """Start the background workers (idempotence is each service's
@@ -63,13 +72,19 @@ class Services:
         self.engine.start()
         self.telemetry.start()
         self.osc_server.start()
+        self.bench_link.start()
         self.scale.start()
+        self.meditation.start()
+        self.border.start()
         self.telemetry_history.start()
 
     def stop(self) -> None:
         self.audio.stop()
+        self.meditation.stop()
+        self.border.stop()
         self.telemetry_history.stop()
         self.scale.stop()
+        self.bench_link.stop()
         self.osc_server.stop()
         self.telemetry.stop()
         self.engine.stop()
@@ -85,7 +100,9 @@ class Services:
                           patch_store=self.patch_store,
                           tap_tracker=self.tap_tracker, scale=self.scale,
                           telemetry_history=self.telemetry_history,
-                          audio=self.audio, playground=self.playground)
+                          audio=self.audio, playground=self.playground,
+                          ota=self.ota, bench_link=self.bench_link,
+                          meditation=self.meditation, border=self.border)
 
 
 def build_services(config) -> Services:
@@ -119,11 +136,39 @@ def build_services(config) -> Services:
         config.set("mode", mode)
         logger.info(f"{reason} → mode={mode}")
 
+    # Bench legs report over ESP-NOW → a serial receiver on the Pi's UART.
+    # When enabled, the scale reads raw weight from here instead of the
+    # on-Pi HX711 GPIO; battery voltage rides along for the UI.
+    bl_cfg = config.get("bench_link") or {}
+    bl_port = bl_cfg.get("serial_port", "/dev/serial0")
+    bench_link = BenchLink(
+        enabled=bl_cfg.get("enabled", True),
+        serial_port=bl_port,
+        baud=bl_cfg.get("baud", 115200),
+        stale_after_s=bl_cfg.get("stale_after_s", 15.0),
+        node_to_leg=bl_cfg.get("node_to_leg"),
+    )
+    # Only become the scale's data source when the link is genuinely
+    # present (pyserial installed AND the UART device exists). On a dev
+    # laptop the port is absent, so scale.py keeps its built-in stub.
+    _use_link = (bench_link.enabled and bench_serial_available
+                 and os.path.exists(bl_port))
+
+    ota = OtaService(
+        firmware_dir=(config.get("ota") or {}).get("firmware_dir",
+                                                   "/opt/here/firmware"))
+
     scale = ScaleSensor(
         cfg=ScaleConfig.from_dict(config.get("scale") or {}),
         mode_switcher=_scale_switch,
         current_mode_getter=lambda: engine.mode,
         persist_cb=lambda d: config.set("scale", d),
+        raw_provider=(bench_link.raw_for_leg if _use_link else None),
+        battery_provider=(bench_link.battery_mv_for_leg if _use_link else None),
+        charging_provider=(bench_link.charging_for_leg if _use_link else None),
+        tare_cmd=(bench_link.send_tare if _use_link else None),
+        threshold_cmd=(bench_link.send_threshold if _use_link else None),
+        link_snapshot=(bench_link.snapshot if _use_link else None),
     )
 
     engine = AnimationEngine(config, transport, sim_bus=sim_bus,
@@ -149,20 +194,34 @@ def build_services(config) -> Services:
         tracks=audio_cfg.get("tracks") or {},
         mixer_control=audio_cfg.get("mixer_control") or None,
     )
-    _couple_fireplace_audio(config, engine, audio)
+    # Guided-meditation mode (one-shot clip that replaces the ocean while
+    # occupied). Driven directly off bench occupancy (not engine mode) so the
+    # "play once per sitter" guard survives forcing the visuals back to
+    # standby when the recording ends.
+    meditation = MeditationController(
+        config, engine, audio,
+        media_dir=audio_cfg.get("media_dir", "/opt/here/media"),
+        occupancy_getter=lambda: scale.occupied,
+        release_setter=scale.set_release_override)
+    _couple_mode_audio(config, engine, audio)
 
     # Nadia's Playground — isolated experimentation mode (see
     # docs/nadia_playground.md). Attached to the engine for its render.
     playground = Playground(config, audio=audio)
     engine.playground = playground
 
+    # Floor-border LED strips (WS2812 over SPI). Independent of the matrix.
+    border = BorderController(config)
+
     return Services(
         config=config, transport=transport, sim_bus=sim_bus,
         osc_state=osc_state, osc_server=osc_server, scene=scene,
         sequence_store=sequence_store, patch_store=patch_store,
         tap_tracker=tap_tracker, telemetry=telemetry,
-        telemetry_history=telemetry_history, scale=scale, engine=engine,
-        audio=audio, playground=playground,
+        telemetry_history=telemetry_history, bench_link=bench_link,
+        ota=ota, scale=scale, engine=engine,
+        audio=audio, meditation=meditation, playground=playground,
+        border=border,
     )
 
 
@@ -255,10 +314,10 @@ def _maybe_autoplay(config, scene) -> None:
 
 # ── Audio/mode coupling ──────────────────────────────────────────────
 
-def _couple_fireplace_audio(config, engine, audio) -> None:
-    """Fireplace ambience follows fireplace mode: entering turns the
-    sound on, leaving turns it off. Fires on every mode change path
-    (admin button, scale auto-engage, sensor)."""
+def _couple_mode_audio(config, engine, audio) -> None:
+    """Fireplace ambience follows fireplace mode via the engine's single
+    mode-change hook. (Guided-meditation audio is driven separately off
+    bench occupancy — see MeditationController.)"""
     def on_mode_change(prev_mode, new_mode) -> None:
         if new_mode == "fireplace":
             audio.set_track("fireplace", enabled=True)

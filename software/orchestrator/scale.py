@@ -46,6 +46,8 @@ class LegReading:
     grams: float = 0.0      # tared + calibrated
     last_ts: float = 0.0
     ok: bool = False        # last read succeeded
+    battery_mv: Optional[int] = None  # leg node battery (serial source only)
+    charging: bool = False  # leg node battery is rising (serial source only)
 
 
 @dataclass
@@ -171,11 +173,28 @@ class ScaleSensor:
 
     def __init__(self, cfg: ScaleConfig, mode_switcher: ModeSwitcher,
                  current_mode_getter: Callable[[], str],
-                 persist_cb: Optional[Callable[[dict], None]] = None) -> None:
+                 persist_cb: Optional[Callable[[dict], None]] = None,
+                 raw_provider: Optional[Callable[[int], Optional[float]]] = None,
+                 battery_provider: Optional[Callable[[int], Optional[int]]] = None,
+                 charging_provider: Optional[Callable[[int], bool]] = None,
+                 tare_cmd: Optional[Callable[[int], bool]] = None,
+                 threshold_cmd: Optional[Callable[[int, int], bool]] = None,
+                 link_snapshot: Optional[Callable[[], dict]] = None) -> None:
         self.cfg = cfg
         self._mode_switcher = mode_switcher
         self._get_mode = current_mode_getter
         self._persist = persist_cb
+        # Optional remote data source (bench_link). When set, raw weight
+        # comes from the ESP-NOW legs over serial instead of the on-Pi
+        # HX711 GPIO; everything downstream (EMA, sign, tare, calibration,
+        # occupancy) is unchanged.
+        self._raw_provider = raw_provider
+        self._battery_provider = battery_provider
+        self._charging_provider = charging_provider
+        # Commands pushed back to the leg nodes over the two-way link.
+        self._tare_cmd = tare_cmd
+        self._threshold_cmd = threshold_cmd
+        self._link_snapshot = link_snapshot
         self._lock = threading.Lock()
         self._legs: list[LegReading] = [LegReading(), LegReading()]
         # State-machine bookkeeping. Both dwell timers are timestamps
@@ -185,6 +204,10 @@ class ScaleSensor:
         self._occupied = False
         self._above_since: Optional[float] = None     # → switch to occupied
         self._empty_since: Optional[float] = None     # → switch to idle
+        # Live, NON-persisted release-dwell override (meditation uses it to be
+        # forgiving while a recording plays). Kept separate from cfg so it can
+        # never leak into the saved config via a persist of cfg.to_dict().
+        self._release_override: Optional[float] = None
         self._running = False
         self._chip_handle: Optional[int] = None
         self._sensors: list[_HX711] = []
@@ -194,7 +217,12 @@ class ScaleSensor:
 
     # ── Lifecycle ───────────────────────────────────────────
     def start(self) -> None:
-        if HAS_LGPIO:
+        # Only claim the on-Pi HX711 GPIOs when there's no serial source. The
+        # bench legs now report weight over ESP-NOW → serial (raw_provider), so
+        # the legacy on-Pi sensors are vestigial; claiming their pins (incl.
+        # GPIO21) would otherwise block other peripherals (e.g. SPI1 used for
+        # the floor-border LED strip).
+        if HAS_LGPIO and self._raw_provider is None:
             try:
                 self._chip_handle = lgpio.gpiochip_open(0)
                 self._sensors = [
@@ -226,6 +254,29 @@ class ScaleSensor:
             self._chip_handle = None
 
     # ── Public read API ─────────────────────────────────────
+    @property
+    def occupied(self) -> bool:
+        """Whether the bench is currently occupied (debounced by the
+        engage/release dwell). Read by the meditation controller to drive
+        the one-shot recording per occupancy."""
+        return self._occupied
+
+    def set_release_override(self, seconds) -> None:
+        """Live, non-persisted release-dwell override. The meditation
+        controller bumps this to ~60 s while a recording plays; passing None
+        clears it so the dwell falls back to the user's saved release_seconds.
+        Crucially this never touches self.cfg, so a later persist of the
+        config can't bake the temporary value in as the new base."""
+        with self._lock:
+            self._release_override = (None if seconds is None
+                                      else max(1.0, float(seconds)))
+
+    def _effective_release(self) -> float:
+        """The release dwell actually in force: the override if one is set,
+        otherwise the configured base."""
+        return (self._release_override if self._release_override is not None
+                else self.cfg.release_seconds)
+
     def snapshot(self) -> dict:
         with self._lock:
             legs = [
@@ -234,18 +285,30 @@ class ScaleSensor:
                     "grams": round(l.grams, 1),
                     "ok": l.ok,
                     "last_ts": l.last_ts,
+                    "battery_mv": l.battery_mv,
+                    "charging": l.charging,
                 }
                 for l in self._legs
             ]
             total = sum(l.grams for l in self._legs)
-            return {
+            # Where raw weight is coming from: the ESP-NOW legs over serial,
+            # the on-Pi HX711 GPIO, or the laptop stub.
+            if self._raw_provider is not None:
+                source = "serial"
+            elif HAS_LGPIO and self._sensors:
+                source = "hx711"
+            else:
+                source = "stub"
+            out = {
                 "enabled": self.cfg.enabled,
-                "hardware": HAS_LGPIO and bool(self._sensors),
+                "hardware": source in ("serial", "hx711"),
+                "source": source,
                 "auto_engage": self.cfg.auto_engage,
                 "weight_overlay": self.cfg.weight_overlay,
                 "threshold_grams": self.cfg.threshold_grams,
                 "engage_seconds": self.cfg.engage_seconds,
-                "release_seconds": self.cfg.release_seconds,
+                "release_seconds": self.cfg.release_seconds,   # saved base
+                "release_effective": self._effective_release(),  # in force now
                 "occupied_mode": self.cfg.occupied_mode,
                 "idle_mode": self.cfg.idle_mode,
                 "occupied": self._occupied,
@@ -261,6 +324,12 @@ class ScaleSensor:
                 "dt_pins": list(self.cfg.dt_pins),
                 "sck_pin": self.cfg.sck_pin,
             }
+        if self._link_snapshot is not None:
+            try:
+                out["link"] = self._link_snapshot()
+            except Exception:
+                out["link"] = None
+        return out
 
     # ── Live config updates ─────────────────────────────────
     def update_settings(self, **kw) -> None:
@@ -271,6 +340,7 @@ class ScaleSensor:
         Only persists if something actually changed — keeps the
         admin-poll feedback loop from re-broadcasting identical state."""
         changed = False
+        thr_changed = False
         with self._lock:
             for k in ("enabled", "auto_engage", "weight_overlay",
                       "threshold_grams", "engage_seconds", "release_seconds",
@@ -283,15 +353,53 @@ class ScaleSensor:
                 if new != old:
                     setattr(self.cfg, k, new)
                     changed = True
+                    if k == "threshold_grams":
+                        thr_changed = True
+        if thr_changed:
+            self._sync_node_thresholds()   # push the equivalent raw to the legs
         if changed and self._persist:
             self._persist(self.cfg.to_dict())
+
+    def _sync_node_thresholds(self) -> None:
+        """Derive each leg node's raw-count occupancy threshold from the
+        bench threshold (kg, sum of both legs) and that leg's calibration,
+        and push it over the two-way link. Half the total per leg (a centred
+        sitter loads both legs roughly equally). No-op without the link."""
+        if self._threshold_cmd is None:
+            return
+        n = max(1, len(self._legs))
+        per_leg_g = self.cfg.threshold_grams / n
+        for i in range(len(self._legs)):
+            cpg = self.cfg.counts_per_gram[i]
+            # Uncalibrated (cpg == default 1.0) → the kg→raw conversion is
+            # meaningless; leave the node on its own default until calibrated.
+            if not cpg or abs(cpg - 1.0) < 1e-6:
+                continue
+            raw = int(round(abs(per_leg_g * cpg)))
+            try:
+                self._threshold_cmd(i, raw)
+            except Exception:
+                logger.exception("scale: node threshold sync failed")
 
     def tare(self) -> dict:
         """Snapshot the current raw EMA as the zero offset for each leg."""
         with self._lock:
             for i, leg in enumerate(self._legs):
                 self.cfg.tare[i] = leg.raw
+                # Recompute grams now so the display zeroes immediately even
+                # for a leg that's currently stale (no fresh packet would
+                # otherwise trigger the read loop to refresh it).
+                cpg = self.cfg.counts_per_gram[i] or 1.0
+                leg.grams = (leg.raw - self.cfg.tare[i]) / cpg
         logger.info(f"scale: tared at {self.cfg.tare}")
+        # Also tell the leg nodes to re-zero their own occupancy baseline so
+        # the bench and the UI stay in sync (best-effort over the two-way link).
+        if self._tare_cmd:
+            for i in range(len(self._legs)):
+                try:
+                    self._tare_cmd(i)
+                except Exception:
+                    logger.exception("scale: leg tare command failed")
         if self._persist:
             self._persist(self.cfg.to_dict())
         return {"tare": list(self.cfg.tare)}
@@ -315,12 +423,18 @@ class ScaleSensor:
             f"scale: calibrated counts_per_gram={self.cfg.counts_per_gram} "
             f"@ {known_grams}g"
         )
+        # Calibration changed the kg→raw mapping, so refresh the legs' raw
+        # occupancy thresholds derived from the bench threshold.
+        self._sync_node_thresholds()
         if self._persist:
             self._persist(self.cfg.to_dict())
         return {"counts_per_gram": list(self.cfg.counts_per_gram)}
 
     # ── Read loop ───────────────────────────────────────────
     def _read_one(self, idx: int) -> Optional[float]:
+        # Remote serial source (ESP-NOW legs) takes priority when wired.
+        if self._raw_provider is not None:
+            return self._raw_provider(idx)
         if self._sensors and idx < len(self._sensors):
             return self._sensors[idx].read_avg()
         # Stub: idle drift + a synthetic occupancy burst every 30 s so the
@@ -339,8 +453,15 @@ class ScaleSensor:
             t0 = time.monotonic()
             for i in range(2):
                 val = self._read_one(i)
+                batt = (self._battery_provider(i)
+                        if self._battery_provider is not None else None)
+                charging = (self._charging_provider(i)
+                            if self._charging_provider is not None else False)
                 with self._lock:
                     leg = self._legs[i]
+                    if batt is not None:
+                        leg.battery_mv = batt
+                    leg.charging = charging
                     if val is None:
                         leg.ok = False
                     else:
@@ -398,14 +519,15 @@ class ScaleSensor:
                 # to be ignored.
                 self._above_since = None
                 if self._occupied:
+                    release_s = self._effective_release()
                     if self._empty_since is None:
                         self._empty_since = now
-                    elif now - self._empty_since >= self.cfg.release_seconds:
+                    elif now - self._empty_since >= release_s:
                         self._occupied = False
                         self._empty_since = None
                         self._safe_switch(
                             self.cfg.idle_mode,
-                            f"scale: idle ({self.cfg.release_seconds:.0f}s "
+                            f"scale: idle ({release_s:.0f}s "
                             f"below threshold)",
                         )
 

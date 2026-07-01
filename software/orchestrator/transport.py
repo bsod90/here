@@ -43,6 +43,10 @@ class UDPTransport:
         self._lock = threading.Lock()
         self._targets = []
         self._seq = 0  # DDP sequence counter
+        # Cached gamma LUT: (exponent, 256-byte translation table). Rebuilt
+        # lazily whenever the configured exponent changes.
+        self._gamma_exp = None
+        self._gamma_lut = None
         self.update_targets(targets)
 
         self._running = True
@@ -76,8 +80,30 @@ class UDPTransport:
         if not enabled:
             return
 
-        delay = (self._config.get("transport") or {}).get("inter_packet_ms", 0) / 1000.0
+        tcfg = self._config.get("transport") or {}
+        frame = self._apply_gamma(frame, tcfg.get("gamma", 1.0))
+        delay = tcfg.get("inter_packet_ms", 0) / 1000.0
         self._send_ddp(frame, enabled, delay)
+
+    def _apply_gamma(self, frame: bytearray, exp):
+        """Gamma-correct the outgoing DDP bytes (hardware path only).
+
+        WLED's realtime gamma is off, so we shape the curve here. A 256-byte
+        translation table makes this a single C-level `bytes.translate` over
+        the whole frame — negligible per-frame cost. exp<=1 is a no-op.
+        """
+        try:
+            exp = float(exp)
+        except (TypeError, ValueError):
+            return frame
+        if exp <= 1.001:
+            return frame
+        if exp != self._gamma_exp:
+            self._gamma_lut = bytes(
+                round((i / 255.0) ** exp * 255.0) for i in range(256)
+            )
+            self._gamma_exp = exp
+        return frame.translate(self._gamma_lut)
 
     def _send_ddp(self, frame: bytearray, targets, delay):
         total_bytes = len(frame)

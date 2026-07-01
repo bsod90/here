@@ -92,6 +92,10 @@ b { font-weight: 600; color: var(--fg); }
   color: var(--fg-dim2);
   font-style: italic;
 }
+.scale-pill.warn {
+  color: var(--warn, #e6a23c);
+  border-color: var(--warn, #e6a23c);
+}
 
 /* Scale auto-engage + weight-overlay toggles (Run tab). */
 .scale-auto-btn.active,
@@ -272,6 +276,23 @@ button {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* Toggle switch — compact on/off control, replaces the big On/Off button
+   pairs. Markup: <label class="switch"><input type="checkbox"><span class="slider"></span></label> */
+.switch { position: relative; display: inline-block; width: 40px; height: 22px;
+  flex: 0 0 auto; vertical-align: middle; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; inset: 0; cursor: pointer; border-radius: 22px;
+  background: var(--bg-card2); border: 1px solid var(--line-2); transition: .15s; }
+.switch .slider::before { content: ""; position: absolute; height: 16px; width: 16px;
+  left: 2px; top: 2px; border-radius: 50%; background: var(--fg-dim); transition: .15s; }
+.switch input:checked + .slider { background: var(--accent-bg); border-color: var(--accent); }
+.switch input:checked + .slider::before { transform: translateX(18px); background: var(--accent); }
+.switch input:disabled + .slider { opacity: .4; cursor: not-allowed; }
+/* A label + switch row that pushes the switch to the right. */
+.switch-row { display: flex; align-items: center; gap: 10px; min-height: 30px; }
+.switch-row .sw-label { flex: 1 1 auto; }
+.switch-row .sw-sub { color: var(--fg-dim); font-size: 11px; }
 
 .sensor-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .sensor-btn {
@@ -733,6 +754,8 @@ button {
 }
 .tiny-btn:hover { background: var(--bg-card); border-color: var(--line-2); }
 .tiny-btn:active { background: var(--accent-bg); color: var(--accent); }
+.tiny-btn.active { background: var(--accent-bg); color: var(--accent);
+  border-color: var(--accent); }
 .tiny-btn.play-btn { color: var(--ok); }
 .tiny-num, .tiny-sel {
   background: var(--bg-card2);
@@ -746,6 +769,8 @@ button {
 .tiny-num { width: 56px; text-align: right; }
 .tiny-num.bpm-num { width: 60px; }
 .tiny-sel { padding-right: 18px; }
+.border-swatch { display: inline-block; width: 56px; height: 18px;
+  border-radius: 3px; border: 1px solid var(--line-2); vertical-align: middle; }
 
 .ableton-bar {
   display: flex;
@@ -1208,4 +1233,36 @@ button {
   .row-line label.dim { flex: 0 0 100%; margin-bottom: 4px; }
   .card-val { font-size: 22px; }
   .target-name { flex: 1 1 100%; }
+}
+
+/* ── Playground: WLED animations section ───────────────────────── */
+.wled-list { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 4px; }
+.wled-row { display: flex; align-items: center; gap: 12px;
+  padding: 6px 4px; border-bottom: 1px solid #20202a; flex-wrap: wrap; }
+.wled-row .wled-show { min-width: 132px; text-align: left; flex: 0 0 auto; }
+.wled-knobs { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; }
+.wknob { display: flex; flex-direction: column; align-items: center;
+  gap: 2px; font-size: 9px; color: var(--dim, #8a8a9a); }
+.wknob-l { white-space: nowrap; letter-spacing: .02em; text-transform: uppercase; }
+.wknob input[type="range"] { width: 76px; height: 16px; }
+.wknob-v { font-variant-numeric: tabular-nums; color: #b8b8c8; min-width: 24px;
+  text-align: center; }
+.wknob-pal select.tiny-sel { width: 84px; }
+.wknob-tog { justify-content: flex-end; }
+.wknob-tog .switch { transform: scale(.8); }
+
+/* ── Playground timeline: scrollable per-meditation editor ──────── */
+#pg-timeline-wrap { overflow: auto; max-height: 440px; }
+.pg-zoom { width: 120px; vertical-align: middle; }
+
+/* Wide mode: break the editor out of the centered 900px column to the
+   full viewport width (the section stays centered, so 50% − 50vw lands
+   on the window's left edge). Not real fullscreen — just elbow room. */
+#pg-timeline-wrap.pg-wide {
+  width: 100vw;
+  max-width: 100vw;
+  margin-left: calc(50% - 50vw);
+  border-left: none;
+  border-right: none;
+  border-radius: 0;
 }

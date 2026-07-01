@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from grid import FRAME_BYTES, TOTAL
-from animations import breathing, standby, debug, weight_shadows, fireplace
+from animations import breathing, standby, debug, weight_shadows, fireplace, rain
 from engine_state import TransitionCoordinator, PowerEstimator
 
 
@@ -49,13 +49,31 @@ def _render_breathing(engine, frame, t_ms, fade_in, fade_out, state):
     # force a specific session-phase render via the Tune UI.
     phase_arg = None if phase == "auto" else phase
     breathing.render(frame, t_ms, params,
-                     fade_in=fade_in, fade_out=fade_out, phase=phase_arg)
+                     fade_in=fade_in, fade_out=fade_out, phase=phase_arg,
+                     state=state)
 
 
 def _render_standby(engine, frame, t_ms, fade_in, fade_out, state):
     params = engine.config.get("standby")
     standby.render(frame, t_ms, params, state,
                    fade_in=fade_in, fade_out=fade_out)
+
+
+def _render_ripples(engine, frame, t_ms, fade_in, fade_out, state):
+    # Rain-pond ripples — used as the calm "rest" screen after a guided
+    # meditation finishes while the sitter is still on the bench.
+    params = engine.config.get("ripples") or {}
+    # Honor the engine's mode crossfade: rain.render writes at full brightness,
+    # so without this it would pop in/out instead of fading. Fold the fade
+    # progress into rain's own brightness knob (fade_in: 0→1; fade_out: 1→0).
+    mult = 1.0
+    if fade_in is not None:
+        mult *= max(0.0, min(1.0, fade_in))
+    if fade_out is not None:
+        mult *= max(0.0, 1.0 - max(0.0, min(1.0, fade_out)))
+    if mult < 1.0:
+        params = {**params, "brightness": float(params.get("brightness", 1.0)) * mult}
+    rain.render(frame, t_ms, params, state)
 
 
 def _render_fireplace(engine, frame, t_ms, fade_in, fade_out, state):
@@ -98,7 +116,7 @@ def _render_playground(engine, frame, t_ms, fade_in, fade_out, state):
         for i in range(len(frame)):
             frame[i] = 0
         return
-    engine.playground.render(frame, t_ms, state)
+    engine.playground.render(frame, t_ms, state, fade_in=fade_in)
 
 
 def _render_off(engine, frame, t_ms, fade_in, fade_out, state):
@@ -108,10 +126,13 @@ def _render_off(engine, frame, t_ms, fade_in, fade_out, state):
 
 MODE_REGISTRY: dict[str, ModeSpec] = {
     "breathing": ModeSpec("breathing", _render_breathing,
-                          breathing.FADE_IN_S, breathing.FADE_OUT_S),
+                          breathing.FADE_IN_S, breathing.FADE_OUT_S,
+                          needs_state=True),
     "standby":   ModeSpec("standby",   _render_standby,
                           standby.FADE_IN_S,   standby.FADE_OUT_S,
                           needs_state=True),
+    "ripples":   ModeSpec("ripples",   _render_ripples,
+                          2.0, 2.0, needs_state=True),
     "fireplace": ModeSpec("fireplace", _render_fireplace,
                           fireplace.FADE_IN_S, fireplace.FADE_OUT_S,
                           needs_state=True),
@@ -206,15 +227,24 @@ class AnimationEngine:
     def mode(self, value):
         with self._lock:
             prev = self._mode
+            # A redundant set (same mode) must be a complete no-op: do NOT
+            # reset the mode's state and do NOT touch the transition. Two
+            # independent drivers set the mode on a sit (the scale state
+            # machine AND the meditation controller); without this guard the
+            # second, redundant `= breathing` would land in the `else` below
+            # and clear the in-flight standby→breathing crossfade, making the
+            # circle snap in abruptly.
+            if prev == value:
+                return
             self._mode = value
-            # Reset per-mode state on (re)entry so e.g. standby starts
-            # with an empty sparkle population.
+            # Reset per-mode state on entry so e.g. standby starts with an
+            # empty sparkle population.
             spec = MODE_REGISTRY.get(value)
             if spec is not None and spec.needs_state:
                 self._mode_states[value] = {}
             # A pair where BOTH modes declare a fade gets crossfaded;
             # everything else (debug/midi/off) is an instant cut.
-            if prev != value and self._has_fade(prev) and self._has_fade(value):
+            if self._has_fade(prev) and self._has_fade(value):
                 self._transition.start(prev, value, self.time_ms())
             else:
                 self._transition.clear()

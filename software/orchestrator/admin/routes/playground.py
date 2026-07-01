@@ -7,15 +7,64 @@ docs/nadia_playground.md and playground.py.
 """
 from __future__ import annotations
 
-import re
+import json
+import logging
+import subprocess
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from ._shared import safe_json
 
-_SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+logger = logging.getLogger(__name__)
+
+# Waveform overview: decode the audio cheaply (mono, low rate) and reduce to
+# this many max-abs buckets for the editor background. Cached to disk.
+_WAVE_BUCKETS = 1600
+_WAVE_RATE = 2000
+
+
+def _compute_peaks(path: Path) -> dict:
+    cmd = ["ffmpeg", "-v", "error", "-nostdin", "-i", str(path),
+           "-ar", str(_WAVE_RATE), "-ac", "1", "-f", "f32le", "pipe:1"]
+    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       check=True)
+    a = np.frombuffer(r.stdout, dtype=np.float32)
+    if a.size == 0:
+        return {"peaks": [], "duration_sec": 0.0}
+    dur = a.size / float(_WAVE_RATE)
+    n = min(_WAVE_BUCKETS, a.size)
+    pad = (-a.size) % n
+    if pad:
+        a = np.concatenate([a, np.zeros(pad, np.float32)])
+    buckets = np.abs(a).reshape(n, -1).max(axis=1)
+    peak = float(buckets.max()) or 1.0
+    return {"peaks": [round(float(x) / peak, 3) for x in buckets],
+            "duration_sec": round(dur, 2)}
+
+
+def _waveform(path: Path) -> dict:
+    """Peaks for `path`, cached next to it keyed by (size, mtime)."""
+    cache = path.with_suffix(path.suffix + ".peaks.json")
+    try:
+        stat = path.stat()
+        sig = f"{stat.st_size}:{int(stat.st_mtime)}"
+        if cache.is_file():
+            cached = json.loads(cache.read_text())
+            if cached.get("sig") == sig:
+                return {"peaks": cached["peaks"], "duration_sec": cached["duration_sec"]}
+        data = _compute_peaks(path)
+        try:
+            cache.write_text(json.dumps({"sig": sig, **data}))
+        except OSError:
+            pass
+        return data
+    except Exception:
+        logger.exception("playground: waveform failed for %s", path)
+        return {"peaks": [], "duration_sec": 0.0}
 
 
 def register(app: FastAPI, playground, audio, config, engine) -> None:
@@ -82,30 +131,53 @@ def register(app: FastAPI, playground, audio, config, engine) -> None:
         config.set("audio", persist)
         return audio.snapshot()
 
-    # ── Recording: upload (raw body) + play/stop ─────────────────────
-    @app.post("/api/playground/recording")
-    async def playground_upload(request: Request):
+    # ── Meditation selection (which event-track the editor edits) ────
+    @app.post("/api/playground/select/{med_id}")
+    async def playground_select(med_id: str):
         if playground is None:
             return _disabled()
-        name = request.query_params.get("name", "recording.wav")
-        name = _SAFE_NAME.sub("_", name).lstrip(".") or "recording.wav"
-        if not name.lower().endswith((".mp3", ".wav")):
-            return JSONResponse({"error": "only .mp3 or .wav"}, status_code=400)
-        data = await request.body()
-        if not data:
-            return JSONResponse({"error": "empty upload"}, status_code=400)
-        media_dir = Path((config.get("audio") or {}).get("media_dir", "/opt/here/media"))
-        dest_dir = media_dir / "playground"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        (dest_dir / name).write_bytes(data)
-        pg = config.get("playground") or {}
-        pg["recording_file"] = name
-        config.set("playground", pg)
-        # Hand the new file to the mixer right away (decodes in the
-        # background) so play is instant once it's loaded.
-        playground.reload_recording()
+        if not playground.select(med_id):
+            return JSONResponse({"error": "unknown meditation"}, status_code=404)
         return playground.snapshot()
 
+    # ── Waveform overview for the selected (or given) meditation ─────
+    @app.get("/api/playground/waveform/{med_id}")
+    async def playground_waveform(med_id: str):
+        if playground is None:
+            return _disabled()
+        med = next((m for m in playground.meditations() if m["id"] == med_id), None)
+        if med is None or not med.get("present"):
+            return JSONResponse({"error": "no audio"}, status_code=404)
+        media_dir = Path((config.get("audio") or {}).get("media_dir", "/opt/here/media"))
+        path = media_dir / med["file"]
+        data = await run_in_threadpool(_waveform, path)
+        return {"id": med_id, **data}
+
+    # ── Transcript (time-aligned words) for the given meditation ─────
+    # Sidecar file next to the audio: <file>.transcript.json, produced
+    # offline (whisper) and rsynced with the media dir. Schema:
+    # {"language": "en", "segments": [{"start": s, "end": s, "text": ...}]}
+    @app.get("/api/playground/transcript/{med_id}")
+    async def playground_transcript(med_id: str):
+        if playground is None:
+            return _disabled()
+        med = next((m for m in playground.meditations() if m["id"] == med_id), None)
+        if med is None or not med.get("present"):
+            return JSONResponse({"error": "no audio"}, status_code=404)
+        media_dir = Path((config.get("audio") or {}).get("media_dir", "/opt/here/media"))
+        path = media_dir / med["file"]
+        tpath = path.with_suffix(path.suffix + ".transcript.json")
+        if not tpath.is_file():
+            return JSONResponse({"error": "no transcript"}, status_code=404)
+        try:
+            data = json.loads(tpath.read_text())
+        except (OSError, ValueError):
+            logger.exception("playground: unreadable transcript for %s", med_id)
+            return JSONResponse({"error": "bad transcript"}, status_code=500)
+        return {"id": med_id, "language": data.get("language"),
+                "segments": data.get("segments") or []}
+
+    # ── Recording (the selected meditation's audio) play/stop ────────
     @app.post("/api/playground/recording/play")
     async def playground_recording_play():
         if playground is None:

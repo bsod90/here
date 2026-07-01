@@ -75,6 +75,19 @@ class TestBuildServices(BootstrapFixture):
         self.assertFalse(
             self.config.get("audio")["tracks"]["fireplace"]["enabled"])
 
+    def test_redundant_mode_set_preserves_crossfade(self):
+        # The scale state machine and the meditation controller BOTH set
+        # engine.mode on a sit. The first set must start the standby→breathing
+        # crossfade; the second, redundant set must NOT clear it (else the
+        # circle snaps in). Regression test for the abrupt-breathing bug.
+        s = self.build()
+        s.engine.mode = "standby"
+        s.engine._transition.clear()              # isolate from the boot mode
+        s.engine.mode = "breathing"               # genuine change → crossfade
+        self.assertTrue(s.engine._transition.active)
+        s.engine.mode = "breathing"               # redundant → must keep it
+        self.assertTrue(s.engine._transition.active)
+
     def test_boot_in_fireplace_mode_enables_sound(self):
         self.config.set("mode", "fireplace")
         s = self.build()

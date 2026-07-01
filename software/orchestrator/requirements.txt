@@ -9,3 +9,7 @@ sounddevice>=0.4.6
 pyzmq>=26.0.0
 # HX711 scale (Pi-only; pip install no-ops cleanly on macOS for dev).
 lgpio>=0.2.2.0; sys_platform == "linux"
+# Serial link to the ESP-NOW bench receiver (bench_link.py). Cross-platform.
+pyserial>=3.5
+# Floor-border WS2812 strips over SPI (border.py; Pi-only, no-ops on macOS dev).
+spidev>=3.5; sys_platform == "linux"

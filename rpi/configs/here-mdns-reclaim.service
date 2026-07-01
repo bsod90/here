@@ -1,0 +1,18 @@
+[Unit]
+Description=Reclaim here.local if avahi renamed itself after a fast power-cycle
+After=NetworkManager-wait-online.service avahi-daemon.service
+Wants=NetworkManager-wait-online.service
+Requires=avahi-daemon.service
+ConditionPathExists=/usr/local/sbin/here-mdns-reclaim
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/here-mdns-reclaim
+# The retry loop can run up to ~3 min on a bad boot; healthy boots exit in <1 s.
+TimeoutStartSec=5min
+StandardOutput=journal
+StandardError=journal
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

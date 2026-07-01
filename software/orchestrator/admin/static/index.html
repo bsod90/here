@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0a0a0e">
   <title>HERE — Admin</title>
-  <link rel="stylesheet" href="/static/admin.css?v=62">
+  <link rel="stylesheet" href="/static/admin.css?v=65">
 </head>
 <body>
   <header class="topbar">
@@ -16,6 +16,8 @@
       <span id="s-uptime">—</span>
       <span><span id="s-temp">—</span>°C</span>
       <span id="s-scale" class="scale-pill" hidden>⚖ <b id="s-scale-val">—</b> kg</span>
+      <span id="s-batt-pill" class="scale-pill" hidden>🔋 <b id="s-batt-pill-val">—</b> V</span>
+      <span id="s-rx-pill" class="scale-pill" hidden>📡 <b id="s-rx-pill-val">—</b></span>
       <span class="t-pill" id="s-throttle" hidden></span>
     </div>
   </header>
@@ -64,10 +66,21 @@
           <span>Leg 1 / Leg 2</span>
           <span><b id="sc-leg1">—</b> / <b id="sc-leg2">—</b> kg</span>
         </div>
-        <div class="row-line">
-          <label class="dim">Auto-engage</label>
-          <button class="mode-btn scale-auto-btn" data-val="true">On</button>
-          <button class="mode-btn scale-auto-btn" data-val="false">Off</button>
+        <div class="kv-row">
+          <span>Battery</span>
+          <span><b id="sc-batt1">—</b> / <b id="sc-batt2">—</b> V</span>
+        </div>
+        <div class="kv-row">
+          <span>Receiver</span>
+          <span><b id="sc-rx-state">—</b> <span class="dim tiny" id="sc-rx-sub"></span></span>
+        </div>
+        <div class="kv-row">
+          <span>Link</span>
+          <span class="dim tiny" id="sc-link">—</span>
+        </div>
+        <div class="switch-row">
+          <label class="dim sw-label" title="Bench occupancy auto-switches between occupied and idle modes">Auto-engage</label>
+          <label class="switch"><input type="checkbox" id="scale-auto-toggle"><span class="slider"></span></label>
         </div>
         <div class="row-line">
           <label class="dim">Threshold</label>
@@ -83,6 +96,12 @@
           <label class="dim">Release</label>
           <input type="number" id="sc-release" class="tiny-num" min="1" step="5"> s
           <span class="dim tiny">below threshold for this long → idle</span>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Legs shut off (deep sleep, re-check every 30 min) below this battery voltage to protect the LiPo. Pushed to both legs and saved in their flash.">Batt cutoff</label>
+          <input type="number" id="sc-cutoff" class="tiny-num" min="3.0" max="4.0" step="0.05"> V
+          <button id="sc-cutoff-set" class="tiny-btn">Set</button>
+          <span class="dim tiny" id="sc-cutoff-applied">—</span>
         </div>
         <div class="row-line">
           <label class="dim">Occupied →</label>
@@ -105,11 +124,93 @@
         </div>
       </div>
 
+      <h2>Firmware (OTA)</h2>
+      <div class="param-group" id="ota-card">
+        <div class="kv-row"><span>Available</span><span><b id="ota-avail">—</b></span></div>
+        <div class="kv-row">
+          <span>Leg 1</span>
+          <span><b id="ota-leg1">—</b>
+            <button class="mode-btn" id="ota-leg1-btn">Update</button>
+            <button class="mode-btn" id="ota-leg1-rb">Reboot</button></span>
+        </div>
+        <div class="kv-row">
+          <span>Leg 2</span>
+          <span><b id="ota-leg2">—</b>
+            <button class="mode-btn" id="ota-leg2-btn">Update</button>
+            <button class="mode-btn" id="ota-leg2-rb">Reboot</button></span>
+        </div>
+        <div class="kv-row">
+          <span>Receiver</span>
+          <span><b id="ota-recv">—</b>
+            <button class="mode-btn" id="ota-recv-btn">Update</button>
+            <button class="mode-btn" id="ota-recv-rb">Reboot</button></span>
+        </div>
+        <div class="kv-row"><span>Recent check-ins</span><span class="dim tiny" id="ota-checkins">—</span></div>
+      </div>
+
+      <h2>Meditation</h2>
+      <div class="param-group" id="meditation-card">
+        <!-- Each toggle enables one guided meditation. When any are on, a sit
+             plays one (random, never the same twice in a row when >1 on)
+             instead of the ocean. List + state built by admin.js. -->
+        <div id="med-list" class="dim tiny">loading…</div>
+        <div class="row-line" style="margin-top:8px;border-top:1px solid var(--line-2);padding-top:8px">
+          <label class="dim">Volume</label>
+          <input type="range" id="med-vol" class="at-vol" min="0" max="100" step="1" style="flex:1;">
+          <span class="dim tiny" id="med-vol-val" style="min-width:38px; text-align:right;">—</span>
+        </div>
+      </div>
+
       <h2>Audio</h2>
       <div class="param-group" id="audio-card">
         <!-- One block per ambience track (ocean, fireplace, …); built by
              admin.js from GET /api/audio. -->
         <div id="audio-tracks"></div>
+      </div>
+
+      <h2>Floor Border</h2>
+      <div class="param-group" id="border-card">
+        <div class="switch-row">
+          <label class="dim sw-label" title="Addressable strips lighting the platform border (WS2812 over SPI)">Border
+            <span class="dim tiny" id="border-status">—</span></label>
+          <label class="switch"><input type="checkbox" id="border-toggle"><span class="slider"></span></label>
+        </div>
+        <div class="row-line">
+          <label class="dim">Animation</label>
+          <select id="border-anim" class="tiny-sel"></select>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Used by solid / pulse / wave">Color</label>
+          <input type="color" id="border-color" style="width:46px;height:26px;padding:0;border:1px solid var(--line-2);background:none;">
+          <label class="dim" title="Used by gradient / comet / aurora / twinkle">Palette</label>
+          <select id="border-palette" class="tiny-sel"></select>
+          <span class="border-swatch" id="border-swatch"></span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Brightness</label>
+          <input type="range" id="border-bri" class="at-vol" min="0" max="100" step="1" style="flex:1;">
+          <span class="dim tiny" id="border-bri-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+        <div class="row-line">
+          <label class="dim">Speed</label>
+          <input type="range" id="border-speed" class="at-vol" min="0" max="100" step="1" style="flex:1;">
+          <span class="dim tiny" id="border-speed-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Smoothness — higher is smoother, more CPU">FPS</label>
+          <input type="range" id="border-fps" class="at-vol" min="10" max="120" step="5" style="flex:1;">
+          <span class="dim tiny" id="border-fps-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Byte order of your strip — flip until the colours match (yellow looks yellow)">Color order</label>
+          <select id="border-order" class="tiny-sel"></select>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="LED count of the strip on GPIO10 (SPI0)">LEDs / strip</label>
+          <input type="number" id="border-num" class="tiny-num" min="0" step="1">
+          <button id="border-num-set" class="tiny-btn">Set</button>
+          <span class="dim tiny" id="border-hw">—</span>
+        </div>
       </div>
 
       <h2>Targets</h2>
@@ -394,6 +495,10 @@
           <div class="th-chart-label">Weight (kg) — leg 1 / leg 2 / total</div>
           <svg id="th-chart-weight" class="th-svg" preserveAspectRatio="none" viewBox="0 0 900 110"></svg>
         </div>
+        <div class="th-chart">
+          <div class="th-chart-label" id="th-label-battery">Battery (V) — leg 1 / leg 2</div>
+          <svg id="th-chart-battery" class="th-svg" preserveAspectRatio="none" viewBox="0 0 900 110"></svg>
+        </div>
         <div id="th-xaxis" class="th-xaxis"></div>
       </div>
 
@@ -473,43 +578,48 @@
       <div class="dim tiny">Tap to show one now. (Ask Claude to add more.)</div>
       <div id="pg-anim-buttons" class="mode-buttons"></div>
 
+      <h2>WLED animations</h2>
+      <div class="dim tiny">Effects ported from WLED. Tap a name to preview
+        it now; nudge the knobs to taste — changes apply live. These are the
+        building blocks we'll arrange into future meditations.</div>
+      <div id="pg-wled-list" class="wled-list"></div>
+
+      <h2>Meditation</h2>
+      <div class="param-group" id="pg-med-card">
+        <div class="row-line">
+          <label class="dim">Score this meditation</label>
+          <select id="pg-med-select" class="tiny-sel"></select>
+          <button class="mode-btn" id="pg-rec-play">▶ Audio</button>
+          <button class="mode-btn" id="pg-rec-stop">■ Stop</button>
+          <span id="pg-rec-status" class="dim tiny"></span>
+        </div>
+        <div class="dim tiny" style="margin-top:4px;">Each meditation keeps its
+          own animation track. Pick one — its audio waveform fills the editor
+          behind your clips.</div>
+      </div>
+
       <h2>Timeline</h2>
       <div class="ableton-bar">
         <button class="tiny-btn play-btn" id="pg-play" title="Play the timeline">▶ Play</button>
-        <button class="tiny-btn" id="pg-play-rec" title="Play timeline + your recording">▶ + Recording</button>
+        <button class="tiny-btn" id="pg-play-rec" title="Play timeline + the meditation audio">▶ + Audio</button>
         <button class="tiny-btn" id="pg-stop" title="Stop">■ Stop</button>
         <span class="bar-sep"></span>
-        <label class="dim tiny">length</label>
-        <select id="pg-length" class="tiny-sel">
-          <option value="30">30s</option>
-          <option value="60" selected>60s</option>
-          <option value="120">2 min</option>
-          <option value="300">5 min</option>
-          <option value="600">10 min</option>
-        </select>
+        <label class="dim tiny">zoom</label>
+        <input type="range" id="pg-zoom" class="pg-zoom" min="4" max="48" value="12"
+               title="Pixels per second">
+        <span class="bar-sep"></span>
+        <button class="tiny-btn" id="pg-wide"
+                title="Expand the editor to the full window width">⛶ Wide</button>
         <span class="bar-sep"></span>
         <button class="tiny-btn" id="pg-clear" title="Remove all clips">Clear all</button>
         <span class="dim tiny" id="pg-seq-info">stopped</span>
       </div>
       <div class="dim tiny" style="margin:4px 0;">
         Drag on a lane to add a clip · drag a clip to move · drag its right
-        edge to resize · double-click to delete.
+        edge to resize · double-click to delete · scroll to pan.
       </div>
       <div id="pg-timeline-wrap" class="piano-roll-wrap">
         <canvas id="pg-timeline"></canvas>
-      </div>
-
-      <h2>Recording</h2>
-      <div class="param-group" id="pg-recording-card">
-        <div class="row-line">
-          <label class="dim">Your meditation file</label>
-          <input type="file" id="pg-rec-file" accept=".mp3,.wav">
-          <span id="pg-rec-status" class="dim tiny"></span>
-        </div>
-        <div class="row-line">
-          <button class="mode-btn" id="pg-rec-play">▶ Play recording</button>
-          <button class="mode-btn" id="pg-rec-stop">■ Stop recording</button>
-        </div>
       </div>
 
       <h2>Ocean</h2>
@@ -530,6 +640,6 @@
   </main>
 
   <script src="/static/lib/nexusui.min.js"></script>
-  <script src="/static/admin.js?v=94"></script>
+  <script src="/static/admin.js?v=102"></script>
 </body>
 </html>

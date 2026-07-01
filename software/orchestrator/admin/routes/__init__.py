@@ -31,6 +31,8 @@ from . import ap as ap_routes
 from . import audio as audio_routes
 from . import playground as playground_routes
 from . import wled as wled_routes
+from . import ota as ota_routes
+from . import border as border_routes
 
 # Re-export so existing `from admin.routes import create_app, LogHandler`
 # import paths keep working without any caller edits.
@@ -43,7 +45,8 @@ logger = logging.getLogger(__name__)
 def create_app(config, engine, transport, telemetry=None, sim_bus=None,
                osc_state=None, scene=None, sequence_store=None,
                patch_store=None, tap_tracker=None, scale=None,
-               telemetry_history=None, audio=None, playground=None) -> FastAPI:
+               telemetry_history=None, audio=None, playground=None,
+               ota=None, bench_link=None, meditation=None, border=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -104,8 +107,11 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
     scale_routes.register(app, scale)
     telemetry_routes.register(app, telemetry, telemetry_history)
     ap_routes.register(app)
-    audio_routes.register(app, audio, config)
+    audio_routes.register(app, audio, config, meditation=meditation)
     playground_routes.register(app, playground, audio, config, engine)
     wled_routes.register(app, config)
+    if ota is not None:
+        ota_routes.register(app, ota, bench_link, config=config)
+    border_routes.register(app, border, config)
 
     return app

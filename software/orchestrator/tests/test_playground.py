@@ -16,7 +16,7 @@ import numpy as np
 from audio import AudioPlayer, _SR
 from config import ConfigManager
 from grid import FRAME_BYTES
-from playground import Playground, REC_CLIP
+from playground import Playground, _med_clip
 
 
 def setUpModule():
@@ -93,7 +93,9 @@ class TestTimelineSanitization(PlaygroundFixture):
 
     def test_timeline_persists_to_config(self):
         self.pg.set_timeline([clip("red", 1, 2)])
-        saved = self.config.get("playground")["timeline"]
+        tracks = self.config.get("playground")["tracks"]
+        # Persisted under the bound track (unbound when no meditations).
+        saved = next(iter(tracks.values()))
         self.assertEqual(len(saved), 1)
         # Survives a fresh Playground built from the same config.
         pg2 = Playground(self.config)
@@ -123,16 +125,19 @@ class TestTriggerAndPlayback(PlaygroundFixture):
         self.render(13_000.0)        # 3s in → blue
         self.assertEqual(self.calls[-1][0], "blue")
 
-    def test_sequence_ends_and_falls_back_to_current(self):
+    def test_sequence_ends_and_holds_last_clip(self):
+        # After the timeline finishes, the floor HOLDS the final clip's
+        # animation — it must NOT snap back to whatever button was
+        # pressed before play (e.g. a sunrise ending in disco).
         self.pg.trigger("blue")
-        self.pg.set_timeline([clip("red", 0, 1)])
+        self.pg.set_timeline([clip("blue", 0, 1), clip("red", 1, 1)])
         self.pg.play()
         self.render(0.0)
         self.assertTrue(self.pg.snapshot()["playing"])
         self.render(5_000.0)         # past the end
         self.assertFalse(self.pg.snapshot()["playing"])
         self.render(6_000.0)
-        self.assertEqual(self.calls[-1][0], "blue")   # back to triggered anim
+        self.assertEqual(self.calls[-1][0], "red")    # holds the LAST clip
 
     def test_gap_between_clips_is_dark(self):
         self.pg.set_timeline([clip("red", 0, 1), clip("blue", 5, 1)])
@@ -236,16 +241,17 @@ class TestSnapshot(PlaygroundFixture):
 
     def test_snapshot_shape(self):
         snap = self.pg.snapshot()
-        for key in ("animations", "current", "playing", "timeline",
-                    "position_sec", "duration_sec", "default_fade_sec",
-                    "recording_file", "recording", "play_with_recording",
+        for key in ("animations", "wled", "palettes", "current", "playing",
+                    "timeline", "position_sec", "duration_sec",
+                    "default_fade_sec", "meditations", "selected",
+                    "selected_duration", "recording", "play_with_recording",
                     "recording_playing"):
             self.assertIn(key, snap)
         ids = [a["id"] for a in snap["animations"]]
-        for builtin in ("breathing", "standby", "flower", "welcome",
-                        "talking", "chill", "winddown", "lotus",
-                        "sunflower", "meadow", "waterlily", "dandelion",
-                        "moodflower"):
+        # Curated playground set (everything else was removed from the
+        # registry; the underlying modules still exist for the engine).
+        for builtin in ("breathing", "standby", "noise", "mandala", "waves",
+                        "mandala2", "sunflower"):
             self.assertIn(builtin, ids)
 
     def test_position_none_when_stopped(self):
@@ -257,8 +263,8 @@ class TestSnapshot(PlaygroundFixture):
 
     def test_builtin_animations_render_without_error(self):
         for anim in ("breathing", "standby", "flower", "welcome",
-                     "talking", "chill", "winddown", "lotus", "sunflower",
-                     "meadow", "waterlily", "dandelion", "moodflower"):
+                     "talking", "chill", "winddown", "blobs", "ink", "noise", "mandala", "waves", "rain", "mandala2", "spiral", "disco", "sunflower",
+                     "meadow", "waterlily", "dandelion"):
             self.pg.trigger(anim)
             for t in (0.0, 500.0, 2_000.0):
                 self.render(t)
@@ -271,9 +277,14 @@ class TestRecordingThroughMixer(PlaygroundFixture):
 
     def setUp(self):
         super().setUp()
+        # Bind a meditation (its audio is the playground's "recording").
+        self.config.set("audio", {"meditation": {"items": [
+            {"id": "med1", "label": "M1", "file": "rec.wav", "enabled": True}]}})
+        self.pg._selected = "med1"
+        self.clip = _med_clip("med1")
         self.audio = AudioPlayer(media_dir=self._td.name, tracks={})
         # 3 s of silence, "already decoded".
-        self.audio._tracks[REC_CLIP] = {
+        self.audio._tracks[self.clip] = {
             "file": "rec.wav", "label": "Recording", "enabled": False,
             "volume": 1.0, "loop": False, "clip": True,
             "path": "/x/rec.wav",
@@ -286,7 +297,7 @@ class TestRecordingThroughMixer(PlaygroundFixture):
         self.pg.set_timeline([clip("red", 0, 1)])
         self.pg.play(with_recording=True)
         self.render(0.0)
-        tr = self.audio._tracks[REC_CLIP]
+        tr = self.audio._tracks[self.clip]
         self.assertTrue(tr["enabled"])
         self.assertEqual(tr["pos"], 0)
 
@@ -294,7 +305,7 @@ class TestRecordingThroughMixer(PlaygroundFixture):
         self.pg.set_timeline([clip("red", 0, 10)])
         self.pg.play(with_recording=True, start_sec=2.0)
         self.render(0.0)
-        self.assertEqual(self.audio._tracks[REC_CLIP]["pos"], int(2.0 * _SR))
+        self.assertEqual(self.audio._tracks[self.clip]["pos"], int(2.0 * _SR))
 
     def test_sequence_runs_until_recording_ends(self):
         # Timeline covers 1 s but the recording is 3 s — her voice must
@@ -312,13 +323,13 @@ class TestRecordingThroughMixer(PlaygroundFixture):
         self.pg.play(with_recording=True)
         self.render(0.0)
         self.pg.stop()
-        self.assertFalse(self.audio._tracks[REC_CLIP]["enabled"])
+        self.assertFalse(self.audio._tracks[self.clip]["enabled"])
 
     def test_without_recording_clip_stays_silent(self):
         self.pg.set_timeline([clip("red", 0, 5)])
         self.pg.play(with_recording=False)
         self.render(0.0)
-        self.assertFalse(self.audio._tracks[REC_CLIP]["enabled"])
+        self.assertFalse(self.audio._tracks[self.clip]["enabled"])
 
     def test_play_recording_without_file_is_safe(self):
         pg2 = Playground(self.config)            # no audio at all

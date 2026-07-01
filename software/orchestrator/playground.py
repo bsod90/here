@@ -10,7 +10,12 @@ Kept deliberately isolated:
   * its own config section ("playground")
   * its own routes (admin/routes/playground.py) + admin tab
 
-Timeline model (v2 — "record audio first, then cover it with clips"):
+Timeline model (v3 — "score an existing meditation"):
+  * Instead of uploading a recording, the editor BINDS to one of the
+    existing meditations (audio.meditation.items). Each meditation keeps
+    its OWN animation event-track (config.playground.tracks[<id>]); the
+    editor scrolls along that meditation's length with its audio waveform
+    drawn behind the clips.
   * clips: {animation, start_sec, duration_sec[, fade_in_sec, fade_out_sec]}
   * every clip eases in over fade_in_sec at its head, and eases out over
     fade_out_sec PAST its end (a release tail, like a DAW clip). Butted
@@ -19,14 +24,19 @@ Timeline model (v2 — "record audio first, then cover it with clips"):
   * overlapping clips all render and blend by weight (no more
     "topmost wins" hard cut).
   * the playhead position + total duration are exposed in snapshot();
-    play(start_sec=…) seeks — both the animations and the recording
-    start from that offset, sample-aligned through the audio mixer.
+    play(start_sec=…) seeks — both the animations and the meditation
+    audio start from that offset, sample-aligned through the audio mixer.
 
-Her meditation recording plays through the shared AudioPlayer as a
-one-shot clip (audio.register_clip/play_clip): it starts within ~23 ms
-of the animations and mixes cleanly with the ambience tracks (the old
-implementation forked an ffplay subprocess — ~0.5 s of unpredictable
-start latency, useless for syncing animation cues to the voice).
+The selected meditation's audio plays through the shared AudioPlayer as a
+one-shot clip named `pg:<id>` (audio.register_clip/play_clip): it starts
+within ~23 ms of the animations and mixes cleanly with the ambience
+tracks. Only the selected meditation is decoded (lazy), so the playground
+doesn't duplicate the MeditationController's whole library at boot.
+
+Lanes available on a track = the garden animations PLUS the WLED-ported
+effects (animations/wled_*.py). The latter also get their own tunable
+"WLED animations" section (per-effect preview button + a few live knobs
++ palette picker); see WLED_FX below.
 
 ADDING A NEW ANIMATION (Claude does this when Nadia describes an idea):
   1. Write a render module under animations/ with
@@ -45,28 +55,65 @@ from pathlib import Path
 
 import numpy as np
 
+import palettes as _palettes
 from animations import breathing as _breathing
 from animations import standby as _standby
-from animations import flower as _flower
-from animations import welcome as _welcome
-from animations import chill as _chill
-from animations import winddown as _winddown
-from animations import talking as _talking
-from animations import lotus as _lotus
-from animations import dandelion as _dandelion
+from animations import noise as _noise
+from animations import mandala as _mandala
+from animations import waves as _waves
+from animations import mandala2 as _mandala2
+from animations import mandala3 as _mandala3
 from animations import sunflower as _sunflower
-from animations import meadow as _meadow
-from animations import waterlily as _waterlily
-from animations import moodflower as _moodflower
+from animations import rain as _rain
+
+# WLED-ported effects (animations/wled_*.py). Grouped + tunable in the
+# playground's "WLED animations" section. Ported line-by-line from WLED
+# v0.15 with bit-exact FastLED math (see animations/_wled.py).
+from animations import wled_distort as _w_distort
+from animations import wled_noise2d as _w_noise2d
+from animations import wled_sunrad as _w_sunrad
+# Not a WLED port — the MIDI engine's shimmering border (synth.py's
+# border-glow layer), but it lives in the same tunable-knobs section.
+from animations import borderglow as _borderglow
 
 logger = logging.getLogger(__name__)
+
+
+# ── WLED effect catalog ─────────────────────────────────────────────
+# Each entry: id, friendly label, render module, the few knobs worth
+# exposing (key, label, min, max), and whether it samples our palettes.
+# `knobs` keys map straight onto config.playground.<id>.<key> overrides
+# (PUT /api/config deep-merges them; the render reads them live). The
+# module's DEFAULTS supply starting values + everything not exposed.
+WLED_FX = [
+    {"id": "border", "label": "Border (shimmer)", "mod": _borderglow, "palette": True,
+     "knobs": [("speed", "Vibrato", 0, 255), ("intensity", "Shimmer", 0, 255),
+               ("custom1", "Width", 16, 255), ("custom2", "Spin", 0, 255)]},
+    {"id": "wled_distort", "label": "Distortion Waves", "mod": _w_distort, "palette": True,
+     "knobs": [("speed", "Speed", 0, 255), ("intensity", "Scale", 0, 255)],
+     "toggles": [("blue_off", "Blue off")]},
+    {"id": "wled_noise2d", "label": "Noise 2D", "mod": _w_noise2d, "palette": True,
+     "knobs": [("speed", "Drift", 0, 255), ("intensity", "Scale", 0, 255)]},
+    {"id": "wled_sunrad", "label": "Sun Radiation", "mod": _w_sunrad, "palette": False,
+     "knobs": [("speed", "Variance", 0, 255), ("intensity", "Brightness", 0, 255)]},
+]
+WLED_BY_ID = {fx["id"]: fx for fx in WLED_FX}
 
 # Gentle crossfade when entering/leaving the playground mode.
 FADE_IN_S = 2.0
 FADE_OUT_S = 2.0
 
-# Name of the meditation-recording clip inside the AudioPlayer.
-REC_CLIP = "recording"
+# The playground plays the SELECTED meditation's audio through the shared
+# mixer as a one-shot clip named `pg:<meditation-id>`. Each meditation has
+# its own animation event-track (a seconds-timeline) keyed by that id.
+REC_CLIP = "recording"          # legacy name (kept for back-compat imports)
+_PG_PREFIX = "pg:"
+# Track key used when no meditation is bound (e.g. tests, empty fleet).
+_UNBOUND = "_unbound"
+
+
+def _med_clip(mid: str) -> str:
+    return f"{_PG_PREFIX}{mid}"
 
 # Default clip ease used when a timeline clip doesn't override it.
 DEFAULT_FADE_SEC = 1.5
@@ -95,15 +142,31 @@ class Playground:
         self._play_offset_sec = 0.0      # seek offset for the pending play
         self._play_with_recording = False
         self._position_sec: float | None = None   # playhead (render thread)
-        # Timeline cached in memory (synced to config on edits) so render
-        # doesn't deepcopy config every frame.
+        # True while the engine's crossfade INTO playground mode is still
+        # in flight — lets animations hold their intro until it's done.
+        self._in_mode_fade = False
+        # Per-meditation event tracks, cached in memory (synced to config on
+        # edits) so render doesn't deepcopy config every frame. Each track is
+        # a seconds-timeline of animation clips bound to a meditation id.
         cfg = self._config.get("playground") or {}
-        self._timeline: list[dict] = list(cfg.get("timeline") or [])
+        self._tracks: dict[str, list[dict]] = {
+            k: list(v or []) for k, v in (cfg.get("tracks") or {}).items()}
+        # Migrate a legacy single `timeline` into the first meditation's track.
+        legacy = cfg.get("timeline")
         self._default_fade = float(cfg.get("default_fade_sec", DEFAULT_FADE_SEC))
         self._anims = self._build_registry()
-        # Make the recording instantly triggerable (decode runs in the
-        # background inside the AudioPlayer).
-        self.reload_recording()
+        # Bind to a meditation: the saved selection if still valid, else the
+        # first available one (or unbound when no meditations exist).
+        meds = self._meditation_items()
+        ids = [m["id"] for m in meds]
+        sel = cfg.get("selected")
+        self._selected = sel if sel in ids else (ids[0] if ids else _UNBOUND)
+        if legacy and self._selected not in self._tracks:
+            self._tracks[self._selected] = list(legacy)
+        self._timeline: list[dict] = list(self._tracks.get(self._selected) or [])
+        # Register every present meditation's audio as a one-shot clip so the
+        # selected one is instantly playable (decode runs in the background).
+        self._register_med_clips()
 
     # ── Animation registry ─────────────────────────────────────────
     def _build_registry(self) -> dict:
@@ -111,7 +174,17 @@ class Playground:
         the existing animation renders with their live config params, so
         "Breathing" and "Standby" here look like the real modes."""
         def breathing_adapter(frame, time_ms, state):
-            _breathing.render(frame, time_ms, self._config.get("breathing") or {})
+            # Anchor the breath cycle to the moment this animation starts
+            # (state is reset on each trigger/play), so it always begins
+            # at the start of an inhale — small center circle expanding —
+            # instead of joining the cycle mid-breath. While the engine's
+            # mode crossfade is still in flight, keep re-stamping the
+            # anchor: the circle holds at the small center until the
+            # transition finishes, THEN the first inhale begins.
+            if self._in_mode_fade or "t0" not in state:
+                state["t0"] = time_ms
+            _breathing.render(frame, time_ms - state["t0"],
+                              self._config.get("breathing") or {})
 
         def standby_adapter(frame, time_ms, state):
             _standby.render(frame, time_ms, self._config.get("standby") or {}, state)
@@ -122,25 +195,134 @@ class Playground:
                 module.render(frame, time_ms, cfg.get(section) or {}, state)
             return adapter
 
-        return {
+        reg = {
             "breathing":  ("Breathing", breathing_adapter),
             "standby":    ("Standby (stars)", standby_adapter),
-            "flower":     ("Flower (4 petals)", pg_adapter(_flower, "flower")),
-            "welcome":    ("Welcome (bloom)", pg_adapter(_welcome, "welcome")),
-            "talking":    ("Talking (sound waves)", pg_adapter(_talking, "talking")),
-            "chill":      ("Chill (aurora)", pg_adapter(_chill, "chill")),
-            "winddown":   ("Wind-down (settle)", pg_adapter(_winddown, "winddown")),
-            # The flower garden 🌸 — see each module's DEFAULTS for knobs.
-            "lotus":      ("Lotus (unfolding)", pg_adapter(_lotus, "lotus")),
+            "noise":      ("White noise (shimmer)", pg_adapter(_noise, "noise")),
+            "mandala":    ("Mandala", pg_adapter(_mandala, "mandala")),
+            "waves":      ("Underwater", pg_adapter(_waves, "waves")),
+            "mandala2":   ("Mandala II (pearls)", pg_adapter(_mandala2, "mandala2")),
+            "mandala3":   ("Mandala III (lattice)", pg_adapter(_mandala3, "mandala3")),
             "sunflower":  ("Sunflower (spiral)", pg_adapter(_sunflower, "sunflower")),
-            "meadow":     ("Night meadow", pg_adapter(_meadow, "meadow")),
-            "waterlily":  ("Water lily (pond)", pg_adapter(_waterlily, "waterlily")),
-            "dandelion":  ("Dandelion (let go)", pg_adapter(_dandelion, "dandelion")),
-            "moodflower": ("Mood flower (shimmer)", pg_adapter(_moodflower, "moodflower")),
+            # Same module as the post-meditation "ripples" rest screen,
+            # but with its own livelier garden defaults + overrides
+            # under config.playground.rain.
+            "rain":       ("Water droplets", pg_adapter(_rain, "rain")),
         }
+        # WLED-ported effects share the same live-config adapter (their
+        # tuned knobs live under config.playground.<id>).
+        for fx in WLED_FX:
+            reg[fx["id"]] = (fx["label"], pg_adapter(fx["mod"], fx["id"]))
+        return reg
 
     def animation_list(self) -> list[dict]:
-        return [{"id": k, "label": v[0]} for k, v in self._anims.items()]
+        # Garden animations only (the WLED-ported effects live in their own
+        # section + list, so they don't crowd the trigger buttons).
+        return [{"id": k, "label": v[0]} for k, v in self._anims.items()
+                if k not in WLED_BY_ID]
+
+    # ── WLED effects: knob metadata + current values ────────────────
+    def wled_list(self) -> list[dict]:
+        """Per-effect descriptor for the WLED section: friendly label,
+        the knobs to render, whether it takes a palette, and the current
+        effective values (module DEFAULTS overlaid with config overrides)."""
+        cfg = self._config.get("playground") or {}
+        out = []
+        for fx in WLED_FX:
+            defaults = dict(getattr(fx["mod"], "DEFAULTS", {}))
+            values = {**defaults, **(cfg.get(fx["id"]) or {})}
+            out.append({
+                "id": fx["id"],
+                "label": fx["label"],
+                "palette": fx["palette"],
+                "knobs": [{"key": k, "label": lbl, "min": lo, "max": hi}
+                          for (k, lbl, lo, hi) in fx["knobs"]],
+                "toggles": [{"key": k, "label": lbl}
+                            for (k, lbl) in fx.get("toggles", [])],
+                "values": {k: values.get(k) for k in
+                           ([kk for (kk, *_2) in fx["knobs"]]
+                            + [kk for (kk, *_3) in fx.get("toggles", [])]
+                            + (["palette"] if fx["palette"] else [])
+                            + ["brightness"])},
+            })
+        return out
+
+    # ── Meditations (the audio each event-track is built over) ──────
+    def _meditation_items(self) -> list[dict]:
+        """Normalized meditation list from config.audio.meditation.items."""
+        med = ((self._config.get("audio") or {}).get("meditation") or {})
+        out = []
+        for it in (med.get("items") or []):
+            mid = it.get("id")
+            if not mid:
+                continue
+            out.append({"id": mid, "label": it.get("label", mid),
+                        "file": it.get("file")})
+        return out
+
+    def _med_path(self, file: str | None) -> Path | None:
+        if not file:
+            return None
+        return self._media_dir() / file
+
+    def _register_med_clips(self) -> None:
+        """Register the SELECTED meditation's audio as a `pg:<id>` clip (lazy:
+        only the one being edited is decoded, so we don't duplicate the
+        MeditationController's decodes for the whole library at boot)."""
+        if self._audio is None or self._selected == _UNBOUND:
+            return
+        for m in self._meditation_items():
+            if m["id"] != self._selected:
+                continue
+            path = self._med_path(m["file"])
+            if path is not None and path.is_file():
+                self._audio.register_clip(_med_clip(m["id"]), path)
+
+    def meditations(self) -> list[dict]:
+        """Selectable meditations + presence/duration for the UI."""
+        out = []
+        for m in self._meditation_items():
+            path = self._med_path(m["file"])
+            present = bool(path and path.is_file())
+            dur = 0.0
+            if self._audio is not None:
+                st = self._audio.clip_status(_med_clip(m["id"]))
+                if st and st.get("loaded"):
+                    dur = float(st.get("duration_sec") or 0.0)
+            out.append({"id": m["id"], "label": m["label"], "file": m["file"],
+                        "present": present, "duration_sec": dur})
+        return out
+
+    def select(self, mid: str) -> bool:
+        """Bind the editor to a meditation: stash the current track, load the
+        chosen meditation's track, persist the selection. Returns False for
+        an unknown id."""
+        if mid not in {m["id"] for m in self._meditation_items()}:
+            return False
+        with self._lock:
+            self.stop()
+            self._tracks[self._selected] = list(self._timeline)
+            self._selected = mid
+            self._timeline = list(self._tracks.get(mid) or [])
+        self._persist()
+        if self._audio is not None and self._audio.clip_status(_med_clip(mid)) is None:
+            self._register_med_clips()
+        return True
+
+    def _selected_duration(self) -> float:
+        if self._audio is None or self._selected == _UNBOUND:
+            return 0.0
+        st = self._audio.clip_status(_med_clip(self._selected))
+        return float(st["duration_sec"]) if st and st.get("loaded") else 0.0
+
+    def _persist(self) -> None:
+        cfg = self._config.get("playground") or {}
+        cfg["tracks"] = {k: list(v) for k, v in self._tracks.items()}
+        cfg["selected"] = self._selected
+        cfg["default_fade_sec"] = self._default_fade
+        cfg.pop("timeline", None)          # legacy single timeline retired
+        cfg.pop("recording_file", None)
+        self._config.set("playground", cfg)
 
     # ── Timeline geometry helpers ───────────────────────────────────
     def _clip_window(self, c: dict) -> tuple[float, float, float, float]:
@@ -176,14 +358,26 @@ class Playground:
             _, e, _, fo = self._clip_window(c)
             end = max(end, e + fo)
         if self._play_with_recording and self._audio is not None:
-            st = self._audio.clip_status(REC_CLIP)
+            st = self._audio.clip_status(_med_clip(self._selected))
             if st and st["loaded"]:
                 end = max(end, st["duration_sec"])
         return end
 
     # ── Render (engine thread) ──────────────────────────────────────
-    def render(self, frame: bytearray, time_ms: float, state: dict) -> None:
+    def render(self, frame: bytearray, time_ms: float, state: dict,
+               fade_in: float | None = None) -> None:
         with self._lock:
+            # `fade_in` is the engine's mode-crossfade progress (0..1, or
+            # None outside a transition). Sequenced intros wait for it.
+            self._in_mode_fade = fade_in is not None and fade_in < 1.0
+            # The engine hands us a FRESH `state` dict every time the
+            # playground mode is (re)entered — use that to reset the
+            # per-animation clocks, so intros (breathing's first inhale,
+            # the flower's center, …) replay from the top on each visit
+            # instead of resuming wherever they left off last time.
+            if "entered" not in state:
+                state["entered"] = True
+                self._anim_states = {}
             if self._play_pending:
                 self._play_pending = False
                 self._playing = True
@@ -200,6 +394,16 @@ class Playground:
                     self._playing = False
                     self._position_sec = None
                     self._stop_recording_locked()
+                    # The floor HOLDS the timeline's final animation
+                    # instead of snapping back to whatever button was
+                    # pressed before play (ending a sunrise by cutting
+                    # to the disco floor was... memorable).
+                    if self._timeline:
+                        last = max(self._timeline,
+                                   key=lambda c: float(c.get("start_sec", 0))
+                                   + float(c.get("duration_sec", 0)))
+                        if last.get("animation") in self._anims:
+                            self._current = last["animation"]
                 else:
                     self._render_timeline_locked(frame, time_ms, pos)
                     return
@@ -248,18 +452,23 @@ class Playground:
 
     # ── Controls (route thread) ─────────────────────────────────────
     def snapshot(self) -> dict:
-        cfg = self._config.get("playground") or {}
-        rec = self._audio.clip_status(REC_CLIP) if self._audio is not None else None
+        rec = (self._audio.clip_status(_med_clip(self._selected))
+               if self._audio is not None and self._selected != _UNBOUND else None)
         with self._lock:
             return {
                 "animations": self.animation_list(),
+                "wled": self.wled_list(),
+                "palettes": _palettes.NAMES,
                 "current": self._current,
                 "playing": self._playing,
                 "position_sec": self._position_sec if self._playing else None,
                 "duration_sec": self._sequence_end_locked(),
                 "default_fade_sec": self._default_fade,
                 "timeline": list(self._timeline),
-                "recording_file": cfg.get("recording_file"),
+                # Per-meditation event-track model.
+                "meditations": self.meditations(),
+                "selected": None if self._selected == _UNBOUND else self._selected,
+                "selected_duration": self._selected_duration(),
                 "recording": rec,
                 "play_with_recording": self._play_with_recording,
                 "recording_playing": bool(rec and rec["playing"]),
@@ -283,9 +492,8 @@ class Playground:
                 continue
         with self._lock:
             self._timeline = clean
-        cfg = self._config.get("playground") or {}
-        cfg["timeline"] = clean
-        self._config.set("playground", cfg)
+            self._tracks[self._selected] = clean
+        self._persist()
 
     def trigger(self, anim_id: str) -> None:
         """Instantly show one animation (button press); stops any sequence."""
@@ -313,28 +521,15 @@ class Playground:
             self._position_sec = None
             self._stop_recording_locked()
 
-    # ── Recording (one-shot clip in the shared AudioPlayer) ─────────
-    def _recording_path(self) -> Path | None:
-        cfg = self._config.get("playground") or {}
-        name = cfg.get("recording_file")
-        if not name:
-            return None
-        return self._media_dir() / "playground" / name
-
+    # ── Meditation audio (the selected meditation's clip) ───────────
     def _media_dir(self) -> Path:
         audio_cfg = self._config.get("audio") or {}
         return Path(audio_cfg.get("media_dir", "/opt/here/media"))
 
     def reload_recording(self) -> None:
-        """(Re)register the configured recording with the mixer. Called at
-        boot and after an upload; decode happens in the background."""
-        path = self._recording_path()
-        if path is None or self._audio is None:
-            return
-        if not path.is_file():
-            logger.warning("playground: recording file missing: %s", path)
-            return
-        self._audio.register_clip(REC_CLIP, path)
+        """(Re)register every meditation's audio with the mixer (decode runs
+        in the background). Kept named for back-compat with bootstrap."""
+        self._register_med_clips()
 
     def play_recording(self, start_sec: float = 0.0) -> None:
         with self._lock:
@@ -345,20 +540,20 @@ class Playground:
             self._stop_recording_locked()
 
     def _start_recording_locked(self, start_sec: float = 0.0) -> None:
-        if self._audio is None:
-            logger.warning("playground: no audio player — recording unavailable")
+        if self._audio is None or self._selected == _UNBOUND:
+            logger.warning("playground: no meditation selected — audio unavailable")
             return
-        if self._audio.clip_status(REC_CLIP) is None:
-            self.reload_recording()
-        if self._audio.clip_status(REC_CLIP) is None:
-            logger.warning("playground: no recording to play (%s)",
-                           self._recording_path())
+        clip = _med_clip(self._selected)
+        if self._audio.clip_status(clip) is None:
+            self._register_med_clips()
+        if self._audio.clip_status(clip) is None:
+            logger.warning("playground: no audio for meditation %r", self._selected)
             return
-        self._audio.play_clip(REC_CLIP, start_sec)
+        self._audio.play_clip(clip, start_sec)
 
     def _stop_recording_locked(self) -> None:
-        if self._audio is not None:
-            self._audio.stop_clip(REC_CLIP)
+        if self._audio is not None and self._selected != _UNBOUND:
+            self._audio.stop_clip(_med_clip(self._selected))
 
     def stop_all(self) -> None:
         self.stop()

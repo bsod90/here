@@ -96,6 +96,7 @@ class AudioPlayer:
                 "data":    None,
                 "gain":    0.0,
                 "pos":     0,
+                "ramp_s":  _RAMP_S,  # per-track gain glide time (see `fade`)
             }
 
         self._stream = None
@@ -149,14 +150,19 @@ class AudioPlayer:
 
     # ── Public API ──────────────────────────────────────────
     def set_track(self, name: str, enabled: bool | None = None,
-                  volume: float | None = None) -> None:
+                  volume: float | None = None, fade: float | None = None) -> None:
         """Ramp a track on/off and/or to a new level. Live and gapless —
-        only this track's gain target changes; nothing restarts."""
+        only this track's gain target changes; nothing restarts.
+
+        `fade` sets this transition's glide time in seconds (e.g. 5.0 for a
+        slow crossfade). When omitted, the snappy default (_RAMP_S) is used —
+        so a manual mixer tweak never inherits a leftover slow fade."""
         with self._lock:
             tr = self._tracks.get(name)
             if tr is None:
                 logger.warning("audio: unknown track %r", name)
                 return
+            tr["ramp_s"] = float(fade) if fade is not None else _RAMP_S
             if volume is not None:
                 tr["volume"] = max(0.0, min(1.0, float(volume)))
             if enabled is not None:
@@ -190,6 +196,7 @@ class AudioPlayer:
                 "data":    None,
                 "gain":    0.0,
                 "pos":     0,
+                "ramp_s":  _RAMP_S,
             }
         threading.Thread(target=self._load_clip, args=(name, path),
                          name=f"audio-clip-{name}", daemon=True).start()
@@ -209,26 +216,31 @@ class AudioPlayer:
                 logger.info("audio: loaded clip %r (%.1f s)", name,
                             len(data) / _SR)
 
-    def play_clip(self, name: str, start_sec: float = 0.0) -> None:
-        """Start (or seek) a one-shot clip. Restarting an already-playing
-        clip re-ramps the gain over ~80 ms so the splice doesn't click."""
+    def play_clip(self, name: str, start_sec: float = 0.0,
+                  fade: float | None = None) -> None:
+        """Start (or seek) a one-shot clip. The gain ramps up from silence
+        over `fade` seconds (default ~80 ms) so the splice doesn't click;
+        pass e.g. 5.0 to fade the clip in slowly."""
         with self._lock:
             tr = self._tracks.get(name)
             if tr is None or not tr.get("clip"):
                 logger.warning("audio: unknown clip %r", name)
                 return
+            tr["ramp_s"] = float(fade) if fade is not None else _RAMP_S
             tr["pos"] = max(0, int(float(start_sec) * _SR))
             tr["gain"] = 0.0
             tr["enabled"] = True
 
-    def stop_clip(self, name: str) -> None:
-        # Disable only — the callback ramps the gain out over ~80 ms from
-        # the current position (resetting pos here would replay the head
-        # of the clip during the ramp-out).
+    def stop_clip(self, name: str, fade: float | None = None) -> None:
+        # Disable only — the callback ramps the gain out (over `fade` s, or
+        # ~80 ms by default) from the current position (resetting pos here
+        # would replay the head of the clip during the ramp-out).
         with self._lock:
             tr = self._tracks.get(name)
             if tr is None or not tr.get("clip"):
                 return
+            if fade is not None:
+                tr["ramp_s"] = float(fade)
             tr["enabled"] = False
 
     def clip_status(self, name: str) -> dict | None:
@@ -324,11 +336,13 @@ class AudioPlayer:
         # Runs on PortAudio's thread — keep it allocation-light and never
         # block. GIL makes plain float/bool reads of the track targets safe.
         mix = np.zeros((frames, _CHANNELS), dtype=np.float32)
-        step = frames / (_RAMP_S * _SR)          # max gain change this block
         for tr in self._tracks.values():
             data = tr["data"]
             if data is None:
                 continue
+            # Max gain change this block — per-track so one track can fade
+            # slowly (a 5 s crossfade) while others stay snappy.
+            step = frames / (tr.get("ramp_s", _RAMP_S) * _SR)
             target = tr["volume"] if tr["enabled"] else 0.0
             g0 = tr["gain"]
             if g0 == 0.0 and target == 0.0:

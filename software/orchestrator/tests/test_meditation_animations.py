@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from grid import FRAME_BYTES
-from animations import welcome, talking, chill, winddown
+from animations import welcome, talking, chill, winddown, rain
 
 MODULES = {
     "welcome": welcome,
@@ -85,6 +85,36 @@ class TestMeditationAnimations(unittest.TestCase):
         w = paint(welcome, 30_000.0, state=w_state)
         d = paint(winddown, 30_000.0, state=d_state)
         self.assertLess(int(d.sum()), int(w.sum()))
+
+
+class TestRainRestScreen(unittest.TestCase):
+    """The post-meditation `ripples` rest screen (rain.py) holds pure
+    black for `start_delay_s` — the quiet after-meditation moment — and
+    only then fades the rain in."""
+
+    def _run(self, params, until_ms, step_ms=50.0):
+        state = {}
+        frame = bytearray(FRAME_BYTES)
+        t = 0.0
+        while t <= until_ms:
+            rain.render(frame, t, params, state)
+            t += step_ms
+        return np.frombuffer(bytes(frame), dtype=np.uint8)
+
+    def test_black_during_start_delay(self):
+        px = self._run({"start_delay_s": 5.0, "rate": 8.0}, 4_900.0)
+        self.assertEqual(int(px.max()), 0, "rain leaked into the quiet hold")
+
+    def test_fades_in_after_delay(self):
+        px = self._run({"start_delay_s": 5.0, "fade_in_s": 1.0, "rate": 8.0},
+                       12_000.0)
+        self.assertGreater(int(px.sum()), 0, "rain never appeared after delay")
+
+    def test_no_delay_by_default(self):
+        # Without the knob the rain behaves exactly as before: visible as
+        # soon as its own fade-in ramps up.
+        px = self._run({"fade_in_s": 0.5}, 2_000.0)
+        self.assertGreater(int(px.sum()), 0)
 
 
 if __name__ == "__main__":

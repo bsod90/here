@@ -73,6 +73,16 @@ DEFAULT_CONFIG = {
     "transport": {
         "inter_packet_ms": 0,
         "fps": 30,
+        # Gamma applied to the DDP byte stream just before it leaves for
+        # WLED (WLED's own realtime gamma is disabled: if.live.no-gc=true).
+        # LEDs are driven near-linearly, so without this the dark valleys of
+        # a full-field effect (e.g. Noise 2D) stay muddy-bright and the
+        # structure washes out — and a full-bright frame blows the ABL power
+        # budget, which then crushes the whole frame flat. Gamma deepens the
+        # darks (restoring contrast) and lowers average current (relieving
+        # ABL). The simulator frame is left raw, so it stays the reference.
+        # 1.0 disables. WLED's LED default is 2.8; 2.2 is a gentler curve.
+        "gamma": 2.2,
     },
 
     "breathing": {
@@ -225,6 +235,22 @@ DEFAULT_CONFIG = {
             "fireplace": {"file": "FireFireplace_S08FI.16.wav",
                           "label": "Fireplace", "enabled": False, "volume": 0.5},
         },
+        # Guided-meditation "mode": one-shot recordings that replace the ocean
+        # while the bench is occupied. Each `items` entry can be toggled on/off
+        # independently; when ANY are on, a sit (engine → breathing) plays one
+        # — chosen at random, never the same one twice in a row when >1 is on —
+        # once with the breathing circle, then the ocean/standby resume. Shared
+        # playback volume. `sequence` is reserved for per-meditation animation
+        # choreography later (same for all today).
+        "meditation": {
+            "volume": 1.0,
+            "items": [
+                {"id": "med1", "label": "Meditation 1 [Nadia]",
+                 "file": "meditation1.wav", "enabled": True, "sequence": None},
+                {"id": "med2", "label": "Meditation 2 [Will]",
+                 "file": "meditation2.wav", "enabled": False, "sequence": None},
+            ],
+        },
         # ALSA simple-mixer control, pinned to 100% so it doesn't attenuate
         # on top of the software volume. Empty = auto-detect (prefers
         # PCM/Master/…); set explicitly to override.
@@ -237,20 +263,86 @@ DEFAULT_CONFIG = {
     # Per-animation tuning sections (flower, welcome, talking, chill,
     # winddown) are optional overrides on top of each module's DEFAULTS.
     "playground": {
-        # timeline clips: [{animation, start_sec, duration_sec,
-        #                   fade_in_sec?, fade_out_sec?}]
-        "timeline":        [],
+        # Per-meditation animation event-tracks, keyed by meditation id
+        # (audio.meditation.items[].id). Each track is a seconds-timeline of
+        # clips: [{animation, start_sec, duration_sec, fade_in_sec?,
+        # fade_out_sec?}]. The editor binds to one meditation at a time.
+        "tracks":          {},
+        # Which meditation the editor is currently bound to.
+        "selected":        None,
         # clip ease used when a clip doesn't set its own fades; butted
         # clips crossfade over this long (see playground.py docstring)
         "default_fade_sec": 1.5,
-        # uploaded meditation recording filename (under media_dir/playground/)
-        "recording_file":  None,
     },
 
-    # Dual-HX711 bench scale. Wiring: DT → 16/19, shared SCK → 21,
-    # VCC → 3.3V. counts_per_gram[i] is set by the calibrate API; until
-    # then `grams` is just (raw - tare). Threshold is in grams of the
-    # *sum* across both legs.
+    # Bench link — telemetry from the two ESP-NOW leg nodes, received as
+    # JSON lines over the Pi's UART from the "receiver" XIAO (wired to
+    # GPIO15/RXD). When enabled and the port exists, the scale below reads
+    # raw weight from here instead of the on-Pi HX711 GPIO, and battery
+    # voltage per leg rides along. node_to_leg maps the firmware NODE_ID
+    # (1 = left leg, 2 = right leg) to the scale's leg index.
+    "bench_link": {
+        "enabled": True,
+        "serial_port": "/dev/serial0",
+        "baud": 115200,
+        # Legs only transmit a heartbeat every ~120 s when idle (battery
+        # saving) and the broadcast is fire-and-forget, so a few consecutive
+        # idle beats can drop. Allow ~3 missed beats before "offline".
+        "stale_after_s": 420.0,
+        "node_to_leg": {"1": 0, "2": 1},
+        # Low-battery safety cutoff (mV) pushed to the legs; they shut off
+        # below this and persist it in NVS. 3500 ≈ ~6% on a single LiPo cell.
+        "cutoff_mv": 3500,
+    },
+
+    # OTA firmware staging — the deploy drops compiled .bin images + a
+    # manifest.json here; the boards pull from /api/ota/firmware/* over WiFi.
+    "ota": {
+        "firmware_dir": "/opt/here/firmware",
+    },
+
+    # Floor-border LED strips (WS2812/SK6812) — one per half, driven over SPI
+    # (see border.py). Modelled as one logical ring so the moving gradient
+    # wraps across both halves. Slow + dim by default (runs all night).
+    #   segments[].spi: "bus.dev" → /dev/spidevBUS.DEV
+    #     SPI0 MOSI / GPIO10 → "0.0"  (dtparam=spi=on)     ← STABLE clock; use this
+    #     SPI1 MOSI / GPIO20 → "1.0"  (dtoverlay=spi1-1cs) ← aux clock drifts; glitchy
+    # POWER: the strip MUST have its own 5 V supply (common ground with the Pi),
+    # NEVER the Pi's 5 V pin — full-white on 60 px is ~3 A and browns out the Pi.
+    # Brightness stays low by default for the same reason.
+    "border": {
+        "enabled":    False,
+        "fps":        60,
+        "brightness": 0.25,
+        "speed":      0.5,                 # 0..1; 50% = calibrated rate, ±=half/double
+        "color":      [80, 120, 255],      # single-colour anims (solid/pulse/wave)
+        "palette":    [[80, 120, 255], [40, 90, 205],
+                       [95, 70, 205], [55, 175, 200]],   # multi-colour anims
+        "animation":  "pulse",
+        "color_order": "BRG",              # this strip's byte order (matched by eye)
+        "segments": [
+            {"spi": "0.0", "num": 60},     # GPIO10 strip (set num to real count)
+        ],
+    },
+
+    # Post-meditation "rest" screen (the `ripples` engine mode). SPEED comes
+    # from the rain animation's DEFAULTS — deliberately NOT overridden here,
+    # so the rest screen and the playground's "Water droplets" always stay in
+    # sync. Only the entrance differs: after the recording ends the breathing
+    # circle fades out (7.5 s), `start_delay_s` keeps the floor fully dark for
+    # a beat of after-meditation stillness, and only then does the rain fade
+    # in on its own slow `fade_in_s` (the engine crossfade is long over by then).
+    "ripples": {
+        "start_delay_s": 15.0, # breathing fade-out (7.5 s) + ~7.5 s of pure dark
+        "fade_in_s": 10.0,     # then the rain fades in very gently
+    },
+
+    # Bench scale. Raw weight now comes from the ESP-NOW legs via
+    # bench_link (above); the dt_pins/sck_pin below are the legacy on-Pi
+    # HX711 wiring, kept for the fallback path and ignored while the
+    # serial link is active. counts_per_gram[i] is set by the calibrate
+    # API; until then `grams` is just (raw - tare). Threshold is in grams
+    # of the *sum* across both legs.
     "scale": {
         "enabled": True,
         "dt_pins": [16, 19],
@@ -266,7 +358,10 @@ DEFAULT_CONFIG = {
         # Dwell on both sides of the threshold so single-leg sensor
         # noise can't flip the bench state in a single tick.
         "engage_seconds": 5.0,
-        "release_seconds": 60.0,
+        # Time below threshold before going idle. The meditation controller
+        # temporarily bumps this to ~60 s while a recording is playing (so a
+        # shift in seat doesn't end the meditation), then restores this value.
+        "release_seconds": 10.0,
         "occupied_mode": "breathing",
         "idle_mode": "standby",
         # Render the leg-shadow overlay on top of whatever the current
@@ -366,6 +461,12 @@ class ConfigManager:
     def __init__(self, path: str = "config.json"):
         self._path = Path(path)
         self._lock = threading.Lock()
+        # Disk writes serialize on their own lock so `set()` never holds
+        # `_lock` across an SD-card fsync — the engine's per-frame `get()`
+        # takes `_lock`, and blocking it for a whole fsync (tens to
+        # hundreds of ms on the Pi's SD) froze the LEDs on every config
+        # save (mode changes, knob drags, timeline edits).
+        self._save_lock = threading.Lock()
         self._config = copy.deepcopy(DEFAULT_CONFIG)
         self._load()
 
@@ -393,32 +494,37 @@ class ConfigManager:
             return copy.deepcopy(self._config)
 
     def set(self, key: str, value):
+        # Merge in memory + serialize under `_lock` (fast, ~ms), then do
+        # the slow disk write under `_save_lock` only — see __init__.
         with self._lock:
             if isinstance(value, dict) and key in self._config and isinstance(self._config[key], dict):
                 self._deep_merge(self._config[key], value)
             else:
                 self._config[key] = value
-            self._save()
+            data = json.dumps(self._config, indent=2)
+        self._save(data)
 
-    def _save(self):
+    def _save(self, data: str):
         # Atomic write: config is saved on every mode change (including
         # scale auto-engage), and a power cut mid-write would otherwise
         # truncate the file and lose all settings. Write to a temp file
         # in the same directory, fsync, then rename over the original —
         # readers always see either the old or the new complete file.
-        data = json.dumps(self._config, indent=2)
+        # `data` is a consistent snapshot taken under `_lock`; concurrent
+        # savers serialize here, each renaming its own complete snapshot.
         directory = self._path.parent if str(self._path.parent) else Path(".")
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(directory), prefix=self._path.name + ".", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(data)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self._path)
-        except Exception:
+        with self._save_lock:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(directory), prefix=self._path.name + ".", suffix=".tmp")
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w") as f:
+                    f.write(data)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self._path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise

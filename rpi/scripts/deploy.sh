@@ -73,6 +73,16 @@ export AP_PSK="${AP_PSK:-}"
 bash ${STAGE}/rpi/scripts/install.sh
 EOF
 
+# Stage OTA firmware images (if built via build-firmware.sh) into the dir the
+# orchestrator serves from. Boards pull these over WiFi.
+if [ -d firmware/_staged ]; then
+    echo "→ staging OTA firmware → /opt/here/firmware"
+    rsync -az --delete firmware/_staged/ "${PI_TARGET}:${STAGE}/firmware/"
+    ssh "$PI_TARGET" "sudo mkdir -p /opt/here/firmware && \
+        sudo cp ${STAGE}/firmware/* /opt/here/firmware/ && \
+        sudo chown -R ${PI_USER}:${PI_USER} /opt/here/firmware"
+fi
+
 if [ "${FORCE_REBOOT:-0}" = "1" ]; then
     echo "→ rebooting Pi"
     ssh "$PI_TARGET" 'sudo reboot' || true

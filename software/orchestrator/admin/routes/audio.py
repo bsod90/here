@@ -17,7 +17,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ._shared import safe_json
 
 
-def register(app: FastAPI, audio, config) -> None:
+def _meditation_state(meditation) -> dict:
+    return meditation.state() if meditation is not None else {"items": []}
+
+
+def register(app: FastAPI, audio, config, meditation=None) -> None:
     @app.get("/api/audio/monitor.mp3")
     async def audio_monitor():
         if audio is None:
@@ -45,7 +49,35 @@ def register(app: FastAPI, audio, config) -> None:
     async def audio_snapshot():
         if audio is None:
             return JSONResponse({"error": "audio disabled"}, status_code=503)
-        return audio.snapshot()
+        snap = audio.snapshot()
+        snap["meditation"] = _meditation_state(meditation)
+        return snap
+
+    @app.get("/api/meditation")
+    async def meditation_get():
+        if meditation is None:
+            return JSONResponse({"error": "meditation disabled"}, status_code=503)
+        return meditation.state()
+
+    @app.put("/api/meditation")
+    async def meditation_put(request: Request):
+        # Shared volume and/or a single item's enabled toggle:
+        #   {"volume": 0.4}                 → set shared playback volume
+        #   {"id": "med2", "enabled": true} → toggle one meditation
+        if meditation is None:
+            return JSONResponse({"error": "meditation disabled"}, status_code=503)
+        body = await safe_json(request)
+        if "volume" in body:
+            try:
+                meditation.set_volume(max(0.0, min(1.0, float(body["volume"]))))
+            except (TypeError, ValueError):
+                return JSONResponse({"error": "volume must be a number"},
+                                    status_code=400)
+        if "id" in body and "enabled" in body:
+            if not meditation.set_enabled(str(body["id"]), bool(body["enabled"])):
+                return JSONResponse({"error": "unknown meditation id"},
+                                    status_code=404)
+        return meditation.state()
 
     @app.put("/api/audio")
     async def audio_update(request: Request):

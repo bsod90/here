@@ -853,6 +853,47 @@ function fmtKg(grams) {
   const kg = (grams || 0) / 1000;
   return Math.abs(kg) < 10 ? kg.toFixed(2) : kg.toFixed(1);
 }
+
+function fmtVolt(mv) {
+  if (mv == null) return '—';
+  return (mv / 1000).toFixed(2);
+}
+
+// Voltage for a leg, with a ⚡ when that leg's battery is charging.
+function fmtVoltCharge(leg) {
+  if (!leg) return '—';
+  const v = fmtVolt(leg.battery_mv);
+  return leg.charging ? v + '⚡' : v;
+}
+
+function fmtDurShort(s) {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  return Math.floor(m / 60) + 'h' + (m % 60) + 'm';
+}
+
+// Compact link health line: per-node "n1 ✓ 3.81V −47dB 2s ago".
+function fmtLink(s) {
+  const link = s.link;
+  if (!link) return s.source === 'stub' ? 'simulated (no link)' : s.source;
+  if (!link.enabled) return 'disabled';
+  const nodes = link.nodes || {};
+  const ids = Object.keys(nodes).sort();
+  if (!ids.length) return `waiting on ${link.port}…`;
+  // Subtle power-state glyph: ● actively polling (1s) · ○ power-saving (10s)
+  // · ⚠ low-battery. Falls back to nothing for unknown.
+  const psGlyph = { active: '●', saving: '○', 'low-batt': '⚠' };
+  return ids.map(id => {
+    const n = nodes[id];
+    const mark = n.fresh ? '✓' : '✗';
+    const v = n.battery_mv != null ? `${(n.battery_mv / 1000).toFixed(2)}V` : '—';
+    const r = n.rssi != null ? ` ${n.rssi}dB` : '';
+    const g = psGlyph[n.power_label] ? ` ${psGlyph[n.power_label]}` : '';
+    return `n${id} ${mark} ${v}${r} ${Math.round(n.age_s)}s${g}`;
+  }).join(' · ');
+}
 async function refreshScale() {
   let s;
   try { s = await api('scale'); } catch { return; }
@@ -872,6 +913,44 @@ async function refreshScale() {
       : `idle${s.empty_for_s != null ? ` — empty for ${Math.round(s.empty_for_s)}s` : ''}`;
   }
 
+  // ── Topbar battery pill (lowest leg that's reporting) ─
+  const bpill = document.getElementById('s-batt-pill');
+  const bval  = document.getElementById('s-batt-pill-val');
+  if (bpill && bval) {
+    const mvs = (s.legs || []).map(l => l && l.battery_mv).filter(v => v != null);
+    if (mvs.length) {
+      const lo = Math.min(...mvs);
+      const anyCharging = (s.legs || []).some(l => l && l.charging);
+      bpill.hidden = false;
+      bval.textContent = (lo / 1000).toFixed(2) + (anyCharging ? '⚡' : '');
+      bpill.classList.toggle('warn', lo < 3500 && !anyCharging);  // low-battery highlight
+      bpill.title = 'lowest leg battery' +
+        (anyCharging ? ' — charging' : (lo < 3500 ? ' — LOW' : ''));
+    } else {
+      bpill.hidden = true;
+    }
+  }
+
+  // ── Topbar receiver heartbeat pill ─
+  const rxp = document.getElementById('s-rx-pill');
+  const rxpv = document.getElementById('s-rx-pill-val');
+  const rxh = s.link && s.link.receiver;
+  if (rxp && rxpv) {
+    if (rxh && rxh.ever_seen) {
+      rxp.hidden = false;
+      rxp.classList.toggle('warn', !rxh.online);
+      rxp.classList.toggle('occupied', rxh.online);
+      rxpv.textContent = rxh.online ? 'online' : 'OFFLINE';
+      rxp.title = 'receiver heartbeat' +
+        (rxh.online ? '' : ` — last beat ${Math.round(rxh.last_seen_s || 0)}s ago`);
+    } else {
+      rxp.hidden = false;
+      rxp.classList.add('warn'); rxp.classList.remove('occupied');
+      rxpv.textContent = 'no link';
+      rxp.title = 'no receiver heartbeat seen';
+    }
+  }
+
   // ── Run-tab card ─
   document.getElementById('sc-state').textContent = s.occupied ? 'OCCUPIED' : 'idle';
   document.getElementById('sc-state-sub').textContent =
@@ -879,11 +958,36 @@ async function refreshScale() {
       ? (s.auto_engage ? '' : '(auto off — manual control)')
       : (s.empty_for_s != null ? `empty ${Math.round(s.empty_for_s)}s` : '');
   document.getElementById('sc-total').textContent = fmtKg(s.total_grams);
-  // Display order swapped to match physical labelling on the bench.
-  document.getElementById('sc-leg1').textContent = fmtKg(s.legs[1]?.grams ?? 0);
-  document.getElementById('sc-leg2').textContent = fmtKg(s.legs[0]?.grams ?? 0);
-  refreshToggle('.scale-auto-btn',
-                typeof s.auto_engage === 'boolean' ? s.auto_engage : null);
+  // Leg 1 = node 1 (left), Leg 2 = node 2 (right) — matches physical layout.
+  document.getElementById('sc-leg1').textContent = fmtKg(s.legs[0]?.grams ?? 0);
+  document.getElementById('sc-leg2').textContent = fmtKg(s.legs[1]?.grams ?? 0);
+  document.getElementById('sc-batt1').textContent = fmtVoltCharge(s.legs[0]);
+  document.getElementById('sc-batt2').textContent = fmtVoltCharge(s.legs[1]);
+  const linkEl = document.getElementById('sc-link');
+  linkEl.textContent = fmtLink(s);
+  linkEl.title = '● actively polling (1s)   ○ power-saving (10s)   ⚠ low battery';
+  // ── Receiver heartbeat row ─
+  const rxState = document.getElementById('sc-rx-state');
+  const rxSub = document.getElementById('sc-rx-sub');
+  if (rxState && rxSub) {
+    const rxh = s.link && s.link.receiver;
+    if (rxh && rxh.ever_seen) {
+      rxState.textContent = rxh.online ? 'online' : 'OFFLINE';
+      rxState.style.color = rxh.online ? 'var(--ok)' : 'var(--warn, #e6a23c)';
+      const bits = [];
+      if (rxh.online && rxh.up_ms != null) bits.push('up ' + fmtDurShort(rxh.up_ms / 1000));
+      if (rxh.rx != null) bits.push(rxh.rx + ' pkts fwd');
+      if (!rxh.online && rxh.last_seen_s != null) bits.push('last beat ' + Math.round(rxh.last_seen_s) + 's ago');
+      rxSub.textContent = bits.join(' · ');
+    } else {
+      rxState.textContent = s.source === 'serial' ? 'no heartbeat' : '—';
+      rxState.style.color = s.source === 'serial' ? 'var(--warn, #e6a23c)' : '';
+      rxSub.textContent = '';
+    }
+  }
+  const autoSw = document.getElementById('scale-auto-toggle');
+  if (autoSw && document.activeElement !== autoSw
+      && typeof s.auto_engage === 'boolean') autoSw.checked = s.auto_engage;
   refreshToggle('.scale-overlay-btn',
                 typeof s.weight_overlay === 'boolean' ? s.weight_overlay : null);
   // Don't overwrite inputs the user is currently editing — otherwise
@@ -906,8 +1010,18 @@ async function refreshScale() {
       `threshold ${fmtKg(s.threshold_grams)} kg, release ${s.release_seconds}s`,
     ].filter(Boolean).join(' · ');
     document.getElementById('t-scale-legs').textContent =
-      `leg 1: ${fmtKg(s.legs[1]?.grams ?? 0)} kg · leg 2: ${fmtKg(s.legs[0]?.grams ?? 0)} kg · ` +
-      `pins DT ${s.dt_pins?.join('/')}, SCK ${s.sck_pin}`;
+      `leg 1: ${fmtKg(s.legs[0]?.grams ?? 0)} kg (${fmtVoltCharge(s.legs[0])} V) · ` +
+      `leg 2: ${fmtKg(s.legs[1]?.grams ?? 0)} kg (${fmtVoltCharge(s.legs[1])} V) · ` +
+      fmtLink(s);
+  }
+
+  // Battery cutoff — live per-leg applied value reported by the legs.
+  const cutNodes = (s.link && s.link.nodes) || {};
+  const apEl = document.getElementById('sc-cutoff-applied');
+  if (apEl) {
+    const fv = v => v != null ? (v / 1000).toFixed(2) + 'V' : '—';
+    apEl.textContent = `legs: ${fv((cutNodes['1'] || {}).cutoff_mv)} / ` +
+                       `${fv((cutNodes['2'] || {}).cutoff_mv)}`;
   }
 }
 
@@ -917,8 +1031,8 @@ function bindScaleControls() {
     catch {}
     refreshScale();
   }
-  bindToggle('.scale-auto-btn',
-             (v) => pushSettings({ auto_engage: v === 'true' }));
+  const autoSw = document.getElementById('scale-auto-toggle');
+  if (autoSw) autoSw.onchange = () => pushSettings({ auto_engage: autoSw.checked });
   bindToggle('.scale-overlay-btn',
              (v) => pushSettings({ weight_overlay: v === 'true' }));
   document.getElementById('sc-threshold').addEventListener('change', e => {
@@ -928,6 +1042,22 @@ function bindScaleControls() {
   document.getElementById('sc-release').addEventListener('change', e => {
     const v = parseFloat(e.target.value);
     if (!Number.isNaN(v) && v >= 1) pushSettings({ release_seconds: v });
+  });
+  // Battery cutoff: seed the input from the configured value, push on Set.
+  (async () => {
+    try {
+      const c = await api('bench/cutoff');
+      setInputIfNotFocused('sc-cutoff', (c.mv / 1000).toFixed(2));
+    } catch {}
+  })();
+  document.getElementById('sc-cutoff-set').addEventListener('click', async () => {
+    const v = parseFloat(document.getElementById('sc-cutoff').value);
+    if (Number.isNaN(v) || v < 3.0 || v > 4.0) return;
+    try {
+      await api('bench/cutoff',
+                { method: 'POST', body: JSON.stringify({ mv: Math.round(v * 1000) }) });
+    } catch {}
+    refreshScale();
   });
   document.getElementById('sc-engage').addEventListener('change', e => {
     const v = parseFloat(e.target.value);
@@ -957,6 +1087,49 @@ function bindScaleControls() {
   };
 }
 
+// ── Firmware / OTA ─────────────────────────────────────────
+async function refreshOta() {
+  let s;
+  try { s = await api('ota/status'); } catch { return; }
+  if (!s || s.error) return;
+  const avail = s.available;
+  document.getElementById('ota-avail').textContent = avail != null ? ('v' + avail) : '— (none staged)';
+  const fl = s.flashed || {};
+  const setDev = (id, v) => {
+    const el = document.getElementById(id);
+    if (v == null) { el.textContent = '—'; el.style.color = ''; return; }
+    el.textContent = 'v' + v;
+    el.style.color = (avail != null && v < avail) ? 'var(--warn, #e6a23c)' : 'var(--ok)';
+  };
+  setDev('ota-leg1', fl.leg1); setDev('ota-leg2', fl.leg2); setDev('ota-recv', fl.receiver);
+  const ck = (s.checkins || []).slice(0, 4)
+    .map(c => `${c.device}→${c.action}`).join(' · ');
+  document.getElementById('ota-checkins').textContent = ck || 'none yet';
+}
+
+function bindOtaControls() {
+  async function upd(target) {
+    if (!confirm(`Tell ${target} to enter OTA mode and pull the staged firmware?`)) return;
+    try {
+      const r = await api('ota/update', { method: 'POST', body: JSON.stringify({ target }) });
+      if (r && r.error) alert('OTA: ' + r.error);
+    } catch {}
+  }
+  document.getElementById('ota-leg1-btn').onclick = () => upd('leg1');
+  document.getElementById('ota-leg2-btn').onclick = () => upd('leg2');
+  document.getElementById('ota-recv-btn').onclick = () => upd('receiver');
+  async function reb(target) {
+    if (!confirm(`Reboot ${target}? (also re-seeds its baseline)`)) return;
+    try {
+      const r = await api('ota/reboot', { method: 'POST', body: JSON.stringify({ target }) });
+      if (r && r.error) alert('Reboot: ' + r.error);
+    } catch {}
+  }
+  document.getElementById('ota-leg1-rb').onclick = () => reb('leg1');
+  document.getElementById('ota-leg2-rb').onclick = () => reb('leg2');
+  document.getElementById('ota-recv-rb').onclick = () => reb('receiver');
+}
+
 // ── Audio (per-track ambience loops + volume) ──────────────
 // One block per track (ocean, fireplace, …) built from GET /api/audio.
 // Each block has On/Off + a live volume slider that PUTs {track,…}. State
@@ -969,11 +1142,10 @@ function _buildAudioTrackRow(name, tr) {
   row.className = 'audio-track';
   row.dataset.track = name;
   row.innerHTML =
-    `<div class="row-line">
-       <label class="dim">${tr.label || name}</label>
-       <button class="mode-btn at-on"  data-val="true">On</button>
-       <button class="mode-btn at-off" data-val="false">Off</button>
-       <span class="dim tiny at-status"></span>
+    `<div class="switch-row">
+       <label class="dim sw-label">${tr.label || name}
+         <span class="dim tiny at-status"></span></label>
+       <label class="switch"><input type="checkbox" class="at-toggle"><span class="slider"></span></label>
      </div>
      <div class="row-line">
        <label class="dim">Volume</label>
@@ -986,8 +1158,9 @@ function _buildAudioTrackRow(name, tr) {
                    body: JSON.stringify({ track: name, ...patch }) })
       .catch(() => {});
 
-  row.querySelector('.at-on').onclick  = async () => { await put({ enabled: true });  refreshAudio(); };
-  row.querySelector('.at-off').onclick = async () => { await put({ enabled: false }); refreshAudio(); };
+  row.querySelector('.at-toggle').onchange = async (e) => {
+    await put({ enabled: e.target.checked }); refreshAudio();
+  };
 
   // Live volume while dragging: throttle to ~8/sec + a final send on release.
   // Deliberately doesn't refreshAudio() per step (would snap the slider).
@@ -1015,8 +1188,8 @@ function _buildAudioTrackRow(name, tr) {
 function _updateAudioTrackRow(name, tr, running) {
   const row = document.querySelector(`.audio-track[data-track="${name}"]`);
   if (!row) return;
-  row.querySelector('.at-on').classList.toggle('active', tr.enabled === true);
-  row.querySelector('.at-off').classList.toggle('active', tr.enabled === false);
+  const tog = row.querySelector('.at-toggle');
+  if (tog && document.activeElement !== tog) tog.checked = tr.enabled === true;
   const slider = row.querySelector('.at-vol');
   const valLabel = row.querySelector('.at-vol-val');
   if (typeof tr.volume === 'number') {
@@ -1049,8 +1222,228 @@ async function refreshAudio() {
     _updateAudioTrackRow(name, tr, s.running);
 }
 
+// ── Reusable toggle switch ─────────────────────────────────────
+// makeSwitch(checked, onChange) → { el, input }. `el` is a <label.switch>
+// ready to drop into the DOM; onChange(checked) fires on user toggle.
+function makeSwitch(checked, onChange) {
+  const label = document.createElement('label');
+  label.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = !!checked;
+  input.onchange = () => onChange(input.checked);
+  const slider = document.createElement('span');
+  slider.className = 'slider';
+  label.append(input, slider);
+  return { el: label, input };
+}
+
+// ── Meditation list (Run page) ─────────────────────────────────
+let _medVolBound = false;
+async function refreshMeditation() {
+  let m;
+  try { m = await api('meditation'); } catch { return; }
+  if (!m || m.error) return;
+  _renderMedList(m);
+  const vol = document.getElementById('med-vol');
+  if (vol && !_medVolBound) {
+    _medVolBound = true;
+    vol.oninput = () => { document.getElementById('med-vol-val').textContent = vol.value + '%'; };
+    vol.onchange = async () => {
+      try { await api('meditation', { method: 'PUT', body: JSON.stringify({ volume: vol.value / 100 }) }); } catch {}
+    };
+  }
+  if (vol && document.activeElement !== vol) {
+    vol.value = Math.round((m.volume ?? 1) * 100);
+    document.getElementById('med-vol-val').textContent = vol.value + '%';
+  }
+}
+
+function _renderMedList(m) {
+  const list = document.getElementById('med-list');
+  if (!list) return;
+  const items = m.items || [];
+  list.innerHTML = '';
+  if (!items.length) { list.textContent = 'no meditations configured'; return; }
+  for (const it of items) {
+    const row = document.createElement('div');
+    row.className = 'switch-row';
+    const lab = document.createElement('label');
+    lab.className = 'sw-label';
+    lab.textContent = it.label;
+    if (!it.present) {
+      const warn = document.createElement('span');
+      warn.className = 'sw-sub'; warn.style.color = 'var(--bad,#c66)';
+      warn.textContent = '  · file missing'; lab.appendChild(warn);
+    } else if (it.playing) {
+      const p = document.createElement('span');
+      p.className = 'sw-sub'; p.style.color = 'var(--ok,#6c6)';
+      p.textContent = '  · playing'; lab.appendChild(p);
+    }
+    const sw = makeSwitch(it.enabled, async (on) => {
+      try {
+        const r = await api('meditation', { method: 'PUT',
+          body: JSON.stringify({ id: it.id, enabled: on }) });
+        _renderMedList(r);
+      } catch {}
+    });
+    if (!it.present) sw.input.disabled = true;
+    row.append(lab, sw.el);
+    list.appendChild(row);
+  }
+}
+
 // Rows wire their own controls on build; kept for the init call site.
 function bindAudioControls() {}
+
+// ── Floor border LED strips ───────────────────────────────────
+const _ANIM_LABELS = {
+  solid: 'Solid', pulse: 'Slow pulse', gradient_orbit: 'Gradient orbit',
+  comet: 'Comet', breathe_wander: 'Breathe & wander', wave: 'Wave',
+  twinkle: 'Twinkle', aurora: 'Aurora',
+};
+let _borderBound = false, _borderPalettes = {};
+
+function _rgbToHex(c) {
+  if (!c || c.length < 3) return '#5078ff';
+  return '#' + c.map(v => Math.max(0, Math.min(255, v | 0))
+    .toString(16).padStart(2, '0')).join('');
+}
+function _hexToRgb(h) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
+  if (!m) return [80, 120, 255];
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+async function _putBorder(body) {
+  try {
+    const s = await api('border', { method: 'PUT', body: JSON.stringify(body) });
+    _updateBorder(s);
+  } catch {}
+}
+
+function _bindBorder() {
+  if (_borderBound) return;
+  _borderBound = true;
+  const card = document.getElementById('border-card');
+  if (!card) return;
+  document.getElementById('border-toggle').onchange =
+    e => _putBorder({ enabled: e.target.checked });
+  document.getElementById('border-anim').onchange =
+    e => _putBorder({ animation: e.target.value });
+  document.getElementById('border-color').onchange =
+    e => _putBorder({ color: _hexToRgb(e.target.value) });
+  document.getElementById('border-palette').onchange = e => {
+    const pal = _borderPalettes[e.target.value];
+    if (pal) _putBorder({ palette: pal });
+  };
+  const bri = document.getElementById('border-bri');
+  bri.oninput = () => { document.getElementById('border-bri-val').textContent = bri.value + '%'; };
+  bri.onchange = () => _putBorder({ brightness: bri.value / 100 });
+  const sp = document.getElementById('border-speed');
+  sp.oninput = () => { document.getElementById('border-speed-val').textContent = sp.value + '%'; };
+  sp.onchange = () => _putBorder({ speed: sp.value / 100 });
+  const fps = document.getElementById('border-fps');
+  fps.oninput = () => { document.getElementById('border-fps-val').textContent = fps.value; };
+  fps.onchange = () => _putBorder({ fps: parseInt(fps.value, 10) });
+  document.getElementById('border-order').onchange =
+    e => _putBorder({ color_order: e.target.value });
+  document.getElementById('border-num-set').onclick = () => {
+    const n = parseInt(document.getElementById('border-num').value, 10);
+    if (!Number.isNaN(n) && n >= 0) {
+      const spi = (_borderSeg0 && _borderSeg0.spi) || '0.0';
+      _putBorder({ segments: [{ spi, num: n }] });
+    }
+  };
+}
+let _borderSeg0 = null;
+
+async function refreshBorder() {
+  let s;
+  try { s = await api('border'); } catch { return; }
+  if (!s || s.error) return;
+  _updateBorder(s);
+}
+
+function _updateBorder(s) {
+  _bindBorder();
+  if (!s || s.error) return;
+  _borderPalettes = s.palettes || {};
+  // Animation dropdown (built once).
+  const anim = document.getElementById('border-anim');
+  if (anim && anim.options.length === 0 && Array.isArray(s.animations)) {
+    for (const a of s.animations) {
+      const o = document.createElement('option');
+      o.value = a; o.textContent = _ANIM_LABELS[a] || a;
+      anim.appendChild(o);
+    }
+  }
+  if (anim) anim.value = s.animation;
+  _borderSeg0 = (s.segments && s.segments[0]) || null;
+  // Color-order dropdown (built once).
+  const ord = document.getElementById('border-order');
+  if (ord && ord.options.length === 0 && Array.isArray(s.color_orders)) {
+    for (const o of s.color_orders) {
+      const opt = document.createElement('option');
+      opt.value = o; opt.textContent = o;
+      ord.appendChild(opt);
+    }
+  }
+  if (ord && s.color_order) ord.value = s.color_order;
+  // Palette dropdown (built once from presets); marks current if it matches.
+  const palSel = document.getElementById('border-palette');
+  if (palSel && palSel.options.length === 0) {
+    for (const name of Object.keys(_borderPalettes)) {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      palSel.appendChild(o);
+    }
+  }
+  const curPal = JSON.stringify(s.palette);
+  for (const name of Object.keys(_borderPalettes)) {
+    if (JSON.stringify(_borderPalettes[name]) === curPal) { palSel.value = name; break; }
+  }
+  // Swatch preview of the active palette.
+  const sw = document.getElementById('border-swatch');
+  if (sw && Array.isArray(s.palette)) {
+    sw.style.background = 'linear-gradient(90deg,' +
+      s.palette.map(_rgbToHex).join(',') + ')';
+  }
+  const bt = document.getElementById('border-toggle');
+  if (bt && document.activeElement !== bt) bt.checked = !!s.enabled;
+  const col = document.getElementById('border-color');
+  if (col && document.activeElement !== col) col.value = _rgbToHex(s.color);
+  const bri = document.getElementById('border-bri');
+  if (bri && document.activeElement !== bri) {
+    bri.value = Math.round((s.brightness ?? 0.45) * 100);
+    document.getElementById('border-bri-val').textContent = bri.value + '%';
+  }
+  const sp = document.getElementById('border-speed');
+  if (sp && document.activeElement !== sp) {
+    sp.value = Math.round((s.speed ?? 0.5) * 100);
+    document.getElementById('border-speed-val').textContent = sp.value + '%';
+  }
+  const fps = document.getElementById('border-fps');
+  if (fps && document.activeElement !== fps) {
+    fps.value = s.fps ?? 60;
+    document.getElementById('border-fps-val').textContent = fps.value;
+  }
+  const num = document.getElementById('border-num');
+  if (num && document.activeElement !== num) {
+    num.value = (s.segments && s.segments[0] && s.segments[0].num) || 0;
+  }
+  const st = document.getElementById('border-status');
+  if (st) st.textContent = `${s.total || 0} px`;
+  const hw = document.getElementById('border-hw');
+  if (hw) {
+    const ok = (s.strips || []).filter(x => x.ok).length;
+    const tot = (s.strips || []).length;
+    hw.textContent = tot ? (ok === tot ? 'SPI ok' : `SPI ${ok}/${tot}`) : 'no strips';
+    hw.style.color = (tot && ok === tot) ? '' : 'var(--bad, #c66)';
+  }
+}
+function bindBorderControls() {}
 
 // Preview-phase dropdown for the breathing session. Persists to
 // breathing.session.preview_phase via PUT /api/config; the engine
@@ -1288,6 +1681,99 @@ function thRenderWeight(svg, samples, tMin, tMax) {
   svg.appendChild(tMax2);
 }
 
+// ── Battery chart: 2 lines (leg1 / leg2), volts ─
+function thRenderBattery(svg, samples, tMin, tMax) {
+  _svgClear(svg);
+  if (!samples.length) return _svgEmpty(svg, 'no data yet');
+  const series = [
+    { key: 'leg1_mv', label: 'leg 1', color: TH_LEG_COLORS.leg1 },
+    { key: 'leg2_mv', label: 'leg 2', color: TH_LEG_COLORS.leg2 },
+  ];
+  // Auto-range tightly around the data — battery moves in a narrow band,
+  // so a fixed 0..4.2 V axis would render it as a flat line.
+  let lo = Infinity, hi = -Infinity;
+  for (const s of samples) for (const ser of series) {
+    const mv = s[ser.key];
+    if (mv == null) continue;
+    const v = mv / 1000;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (!isFinite(lo)) return _svgEmpty(svg, 'no battery data yet');
+  let yMin = lo - 0.05, yMax = hi + 0.05;
+  if (yMax - yMin < 0.3) { const m = (yMin + yMax) / 2; yMin = m - 0.15; yMax = m + 0.15; }
+  const tx = (t) => TH_PAD + (t - tMin) / Math.max(1, tMax - tMin) * (TH_W - TH_PAD * 2);
+  const yy = (v) => TH_PAD + (1 - (v - yMin) / (yMax - yMin)) * (TH_H - TH_PAD * 2);
+  for (const ser of series) {
+    let path = '', pen = false;
+    samples.forEach((s) => {
+      const mv = s[ser.key];
+      if (mv == null) { pen = false; return; }   // gap — lift the pen
+      path += (pen ? 'L ' : 'M ') + tx(s.ts).toFixed(1) + ' ' + yy(mv / 1000).toFixed(1) + ' ';
+      pen = true;
+    });
+    if (path) svg.appendChild(_svgEl('path', {
+      d: path, fill: 'none', stroke: ser.color, 'stroke-width': '1.3',
+    }));
+  }
+  // Legend
+  let xLeg = TH_W - TH_PAD;
+  for (let i = series.length - 1; i >= 0; i--) {
+    const ser = series[i];
+    const t = _svgEl('text', {
+      x: xLeg, y: TH_PAD + 9, 'text-anchor': 'end',
+      class: 'th-empty-msg', fill: ser.color,
+    });
+    t.textContent = ser.label;
+    svg.appendChild(t);
+    xLeg -= (ser.label.length * 6 + 10);
+  }
+  // Axis hints (top + bottom volts).
+  const top = _svgEl('text', { x: TH_PAD + 2, y: TH_PAD + 9, class: 'th-empty-msg' });
+  top.textContent = `${yMax.toFixed(2)} V`;
+  svg.appendChild(top);
+  const bot = _svgEl('text', { x: TH_PAD + 2, y: TH_H - TH_PAD - 2, class: 'th-empty-msg' });
+  bot.textContent = `${yMin.toFixed(2)} V`;
+  svg.appendChild(bot);
+}
+
+// Estimate remaining runtime for one leg: take the last hour of samples,
+// sum only the discharging segments (so charging/flat stretches are filtered
+// out), get a mV/hour discharge rate, and linearly extrapolate the current
+// voltage down to the cutoff. Linear on voltage — rough near the LiPo knee,
+// but it's exactly "given the last hour of discharge, when do we hit cutoff".
+function thBatteryLifetime(samples, key, cutoffMv) {
+  const pts = [];
+  let lastTs = null;
+  for (const s of samples) {
+    if (s[key] != null) { pts.push([s.ts, s[key]]); lastTs = s.ts; }
+  }
+  if (pts.length < 2 || lastTs == null) return null;
+  const since = lastTs - 3600;                 // last hour only
+  const recent = pts.filter(p => p[0] >= since);
+  if (recent.length < 2) return null;
+  const curMv = recent[recent.length - 1][1];
+  let dropMv = 0, dischargeS = 0;
+  for (let i = 1; i < recent.length; i++) {
+    const dt = recent[i][0] - recent[i - 1][0];
+    const dv = recent[i][1] - recent[i - 1][1];
+    if (dt > 0 && dt < 600 && dv < 0) { dropMv += -dv; dischargeS += dt; }
+  }
+  if (curMv <= cutoffMv) return { text: 'at cutoff', charging: false };
+  // Charging or flat over the window → no usable discharge slope.
+  if (dischargeS < 300 || dropMv < 2) {
+    const net = recent[recent.length - 1][1] - recent[0][1];
+    return { text: net > 5 ? 'charging' : 'stable', charging: net > 5 };
+  }
+  const ratePerH = dropMv / (dischargeS / 3600);   // mV per hour
+  const hours = (curMv - cutoffMv) / ratePerH;
+  let t;
+  if (hours >= 48) t = (hours / 24).toFixed(1) + ' d';
+  else if (hours >= 1) t = Math.round(hours) + ' h';
+  else t = '<1 h';
+  return { text: t, charging: false, hours };
+}
+
 function thRenderXAxis(tMin, tMax) {
   const el = document.getElementById('th-xaxis');
   el.innerHTML = '';
@@ -1373,6 +1859,24 @@ async function refreshHistory() {
   thRenderEnergy(document.getElementById('th-chart-energy'), samples, tMin, tMax);
   thRenderModes(document.getElementById('th-chart-modes'), samples, tMin, tMax);
   thRenderWeight(document.getElementById('th-chart-weight'), samples, tMin, tMax);
+  thRenderBattery(document.getElementById('th-chart-battery'), samples, tMin, tMax);
+  // Battery label shows the most recent reading per leg.
+  let lv1 = null, lv2 = null;
+  for (let i = samples.length - 1; i >= 0 && (lv1 == null || lv2 == null); i--) {
+    if (lv1 == null && samples[i].leg1_mv != null) lv1 = samples[i].leg1_mv;
+    if (lv2 == null && samples[i].leg2_mv != null) lv2 = samples[i].leg2_mv;
+  }
+  // Remaining-lifetime estimate to the configured cutoff (last-hour slope).
+  let cutMv = 3500;
+  try { cutMv = (await api('bench/cutoff')).mv || 3500; } catch {}
+  const est = (key) => {
+    const e = thBatteryLifetime(samples, key, cutMv);
+    return e ? e.text : '—';
+  };
+  document.getElementById('th-label-battery').textContent =
+    `Battery (V) — leg 1 ${lv1 != null ? (lv1 / 1000).toFixed(2) : '—'} / ` +
+    `leg 2 ${lv2 != null ? (lv2 / 1000).toFixed(2) : '—'} · ` +
+    `to ${(cutMv / 1000).toFixed(2)} V cutoff: leg 1 ${est('leg1_mv')}, leg 2 ${est('leg2_mv')}`;
   thRenderXAxis(tMin, tMax);
 }
 
@@ -3462,11 +3966,19 @@ async function init() {
   bindScaleControls();
   refreshScale();
   setInterval(refreshScale, 1000);
+  bindOtaControls();
+  refreshOta();
+  setInterval(refreshOta, 5000);
   // Audio: poll less frequently — the only state that changes from
   // outside the user's click is `running` (ffplay died / no media file).
   bindAudioControls();
   refreshAudio();
   setInterval(refreshAudio, 3000);
+  refreshMeditation();
+  setInterval(refreshMeditation, 4000);
+  bindBorderControls();
+  refreshBorder();
+  setInterval(refreshBorder, 5000);
   // History charts — bind controls, kick off the initial fetch so the
   // graphs are already populated whichever tab the user starts on
   // (the early #tab hash-activation path runs before _thState exists,
@@ -3495,15 +4007,23 @@ init();
   const pg = {
     snap: null, lanes: [], timeline: [],
     canvas: null, ctx: null, wired: false,
-    totalSec: 60, minSec: 60, drag: null,
+    totalSec: 120, minSec: 60, drag: null,
     playing: false, playStartMs: 0,
     cueSec: 0,            // where ▶ starts; set by clicking the ruler
     withRec: false,       // last play mode (kept across seeks)
-    recDur: 0,            // uploaded recording length (drawn as a strip)
-    seqDur: 0,            // server-computed sequence end (incl. fades/rec)
+    recDur: 0,            // selected meditation length (drawn as a strip)
+    seqDur: 0,            // server-computed sequence end (incl. fades/audio)
     defaultFade: 1.5,     // server default clip ease (for drawing fades)
     pollTimer: null,      // server-truth poll while playing
+    meds: [], selected: null, selDur: 0,
+    pxPerSec: 12,         // zoom — the editor scrolls instead of fitting
+    wave: null,          // { id, peaks[], duration_sec } for the backdrop
+    transcript: null,    // { id, segments:[{start,end,text}] } words band
+    wide: false,         // editor stretched to the full window width
   };
+  // Transcript band: a touch taller + bigger type in wide mode.
+  const transBandH = () => pg.wide ? 22 : 16;
+  const transFont = () => pg.wide ? '12px Arial' : '9px Arial';
 
   async function pgPost(path, body) {
     try {
@@ -3517,17 +4037,35 @@ init();
     let s;
     try { s = await api('playground'); } catch { return; }
     if (!s || s.error) return;
-    pg.snap = s; pg.lanes = s.animations || []; pg.timeline = s.timeline || [];
+    pg.snap = s; pg.timeline = s.timeline || [];
+    // Lanes = garden animations + the WLED-ported effects, so both can be
+    // placed on a meditation's track.
+    pg.lanes = (s.animations || []).concat(
+      (s.wled || []).map(e => ({ id: e.id, label: e.label })));
     pg.playing = !!s.playing;
     pg.seqDur = s.duration_sec || 0;
     pg.defaultFade = (s.default_fade_sec != null) ? s.default_fade_sec : 1.5;
-    pg.recDur = (s.recording && s.recording.loaded) ? s.recording.duration_sec : 0;
+    pg.meds = s.meditations || [];
+    const prevSel = pg.selected;
+    pg.selected = s.selected || null;
+    pg.selDur = s.selected_duration || 0;
+    pg.recDur = pg.selDur;
     updateTotalSec();
     if (pg.playing && s.position_sec != null) {
       pg.playStartMs = performance.now() - s.position_sec * 1000;
     }
     renderTriggerButtons();
-    renderRecording();
+    renderWled();
+    renderMedSelect();
+    // (Re)load the waveform backdrop when the bound meditation changes.
+    if (pg.selected && (prevSel !== pg.selected ||
+        !pg.wave || pg.wave.id !== pg.selected)) {
+      fetchWaveform(pg.selected);
+      fetchTranscript(pg.selected);
+    } else if (!pg.selected) {
+      pg.wave = null;
+      pg.transcript = null;
+    }
     sizeCanvas(); drawTimeline();
     // Ocean state from the shared audio snapshot.
     try {
@@ -3551,32 +4089,196 @@ init();
     });
   }
 
-  function renderRecording() {
+  function renderMedSelect() {
+    const sel = document.getElementById('pg-med-select');
     const st = document.getElementById('pg-rec-status');
-    if (st) st.textContent = pg.snap && pg.snap.recording_file
-      ? `loaded: ${pg.snap.recording_file}` : 'no recording uploaded';
+    if (sel) {
+      const sig = pg.meds.map(m => m.id + (m.present ? '1' : '0')).join(',')
+        + '|' + (pg.selected || '');
+      if (sel.dataset.sig !== sig) {
+        sel.dataset.sig = sig;
+        sel.innerHTML = '';
+        if (!pg.meds.length) {
+          const o = document.createElement('option');
+          o.textContent = '(no meditations)'; o.disabled = true; sel.appendChild(o);
+        }
+        pg.meds.forEach(m => {
+          const o = document.createElement('option');
+          o.value = m.id;
+          o.textContent = m.label + (m.present ? '' : ' (missing)');
+          if (!m.present) o.disabled = true;
+          if (m.id === pg.selected) o.selected = true;
+          sel.appendChild(o);
+        });
+      }
+    }
+    if (st) {
+      const m = pg.meds.find(x => x.id === pg.selected);
+      st.textContent = m
+        ? (m.present ? `${(pg.selDur || 0).toFixed(0)}s` : 'audio missing')
+        : 'pick a meditation';
+    }
   }
 
-  // The canvas always shows at least the dropdown length, stretching to
-  // fit the recording / sequence end so nothing falls off the edge.
+  async function fetchWaveform(id) {
+    try {
+      const r = await fetch('/api/playground/waveform/' + encodeURIComponent(id));
+      if (!r.ok) { pg.wave = null; return; }
+      const d = await r.json();
+      pg.wave = { id, peaks: d.peaks || [], duration_sec: d.duration_sec || 0 };
+      sizeCanvas(); drawTimeline();
+    } catch { pg.wave = null; }
+  }
+
+  async function fetchTranscript(id) {
+    try {
+      const r = await fetch('/api/playground/transcript/' + encodeURIComponent(id));
+      if (!r.ok) { pg.transcript = null; sizeCanvas(); drawTimeline(); return; }
+      const d = await r.json();
+      pg.transcript = { id, segments: d.segments || [] };
+      sizeCanvas(); drawTimeline();
+    } catch { pg.transcript = null; }
+  }
+
+  // ── WLED animations section: per-row preview button + live knobs ──
+  const _wledTimers = {};
+  function pgSetParam(id, key, val) {
+    const k = id + '.' + key;
+    clearTimeout(_wledTimers[k]);
+    _wledTimers[k] = setTimeout(() => {
+      api('config', { method: 'PUT',
+        body: JSON.stringify({ playground: { [id]: { [key]: val } } }) });
+    }, 120);
+  }
+
+  function makeKnob(id, k, val) {
+    const wrap = document.createElement('label');
+    wrap.className = 'wknob';
+    const lab = document.createElement('span');
+    lab.className = 'wknob-l'; lab.textContent = k.label;
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = k.min; inp.max = k.max;
+    inp.step = k.step || 1; inp.value = (val != null ? val : k.min);
+    const out = document.createElement('span');
+    out.className = 'wknob-v';
+    const fmt = v => k.step ? (+v).toFixed(2) : Math.round(v);
+    out.textContent = fmt(inp.value);
+    inp.oninput = () => {
+      out.textContent = fmt(inp.value);
+      pgSetParam(id, k.key, k.step ? parseFloat(inp.value) : parseInt(inp.value, 10));
+    };
+    wrap.append(lab, inp, out);
+    return wrap;
+  }
+
+  function makePalKnob(id, pals, cur) {
+    const wrap = document.createElement('label');
+    wrap.className = 'wknob wknob-pal';
+    const lab = document.createElement('span');
+    lab.className = 'wknob-l'; lab.textContent = 'Palette';
+    const sel = document.createElement('select');
+    sel.className = 'tiny-sel';
+    (pals || []).forEach(name => {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      if (name === cur) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => pgSetParam(id, 'palette', sel.value);
+    wrap.append(lab, sel);
+    return wrap;
+  }
+
+  function makeToggleKnob(id, t, cur) {
+    const wrap = document.createElement('label');
+    wrap.className = 'wknob wknob-tog';
+    const lab = document.createElement('span');
+    lab.className = 'wknob-l'; lab.textContent = t.label;
+    const sw = makeSwitch(!!cur, on => pgSetParam(id, t.key, on));
+    wrap.append(lab, sw.el);
+    return wrap;
+  }
+
+  function renderWled() {
+    const wrap = document.getElementById('pg-wled-list');
+    if (!wrap || !pg.snap) return;
+    const fx = pg.snap.wled || [];
+    const pals = pg.snap.palettes || [];
+    // Build once (rebuild only if the effect set changes) so live dragging
+    // isn't clobbered by the refresh poll.
+    const sig = fx.map(e => e.id).join(',');
+    if (wrap.dataset.sig !== sig) {
+      wrap.dataset.sig = sig;
+      wrap.innerHTML = '';
+      fx.forEach(e => {
+        const row = document.createElement('div');
+        row.className = 'wled-row'; row.dataset.id = e.id;
+        const btn = document.createElement('button');
+        btn.className = 'mode-btn wled-show'; btn.textContent = e.label;
+        btn.onclick = async () => { await pgPost('/trigger/' + e.id); pgRefresh(); };
+        row.appendChild(btn);
+        const knobs = document.createElement('div');
+        knobs.className = 'wled-knobs';
+        e.knobs.forEach(k => knobs.appendChild(makeKnob(e.id, k, e.values[k.key])));
+        (e.toggles || []).forEach(t => knobs.appendChild(makeToggleKnob(e.id, t, e.values[t.key])));
+        if (e.palette) knobs.appendChild(makePalKnob(e.id, pals, e.values.palette));
+        knobs.appendChild(makeKnob(e.id,
+          { key: 'brightness', label: 'Bright', min: 0, max: 1, step: 0.05 },
+          e.values.brightness));
+        row.appendChild(knobs);
+        wrap.appendChild(row);
+      });
+    }
+    updateWledActive();
+  }
+
+  function updateWledActive() {
+    const cur = pg.snap && pg.snap.current;
+    document.querySelectorAll('#pg-wled-list .wled-row').forEach(row => {
+      const b = row.querySelector('.wled-show');
+      if (b) b.classList.toggle('active', !pg.playing && row.dataset.id === cur);
+    });
+  }
+
+  // The track spans the selected meditation (or a default length), and the
+  // editor SCROLLS at a fixed pixels-per-second zoom instead of squashing.
   function updateTotalSec() {
-    const need = Math.max(pg.minSec, pg.seqDur, pg.recDur);
-    pg.totalSec = Math.max(10, Math.ceil(need / 10) * 10);
+    const base = pg.selDur > 0 ? pg.selDur : pg.minSec;
+    const need = Math.max(base, pg.seqDur);
+    pg.totalSec = Math.max(10, Math.ceil(need / 5) * 5);
   }
 
   // ── Timeline canvas ──────────────────────────────────────────
+  // Transcript band sits between the ruler and the lanes; it only takes
+  // space when the selected meditation actually has a transcript.
+  const transH = () =>
+    (pg.transcript && pg.transcript.segments.length) ? transBandH() : 0;
+
+  // Shorten `text` with an ellipsis so neighbouring phrases never paint
+  // over each other; returns '' when not even "…" fits.
+  function fitText(ctx, text, maxW) {
+    if (maxW <= 2) return '';
+    if (ctx.measureText(text).width <= maxW) return text;
+    let lo = 0, hi = text.length;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (ctx.measureText(text.slice(0, mid) + '…').width <= maxW) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo ? text.slice(0, lo).trimEnd() + '…' : '';
+  }
+
   function sizeCanvas() {
-    const c = pg.canvas, wrap = document.getElementById('pg-timeline-wrap');
-    if (!c || !wrap) return;
-    const w = Math.max(320, wrap.clientWidth - 2);
-    const h = RULER_H + Math.max(1, pg.lanes.length) * ROW_H + 4;
+    const c = pg.canvas;
+    if (!c) return;
+    const w = LABEL_W + pg.totalSec * pg.pxPerSec + 8;
+    const h = RULER_H + transH() + Math.max(1, pg.lanes.length) * ROW_H + 4;
     c.width = w; c.height = h; c.style.width = w + 'px'; c.style.height = h + 'px';
   }
-  const pxPerSec = () => (pg.canvas.width - LABEL_W) / pg.totalSec;
-  const secToX = s => LABEL_W + s * pxPerSec();
-  const xToSec = x => Math.max(0, (x - LABEL_W) / pxPerSec());
-  const laneAtY = y => Math.floor((y - RULER_H) / ROW_H);
-  const laneTop = i => RULER_H + i * ROW_H;
+  const secToX = s => LABEL_W + s * pg.pxPerSec;
+  const xToSec = x => Math.max(0, (x - LABEL_W) / pg.pxPerSec);
+  const laneAtY = y => Math.floor((y - RULER_H - transH()) / ROW_H);
+  const laneTop = i => RULER_H + transH() + i * ROW_H;
 
   function drawTimeline() {
     const c = pg.canvas, ctx = pg.ctx;
@@ -3592,20 +4294,35 @@ init();
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
       if (s % 10 === 0) { ctx.fillStyle = '#aaa'; ctx.fillText(s + 's', x + 2, RULER_H / 2); }
     }
-    // Lanes + labels.
+    // Transcript band — the meditation's words, time-aligned, so clips
+    // can be arranged against what's being said (click to cue there).
+    const th = transH();
+    if (th) {
+      ctx.fillStyle = '#10101a';
+      ctx.fillRect(LABEL_W, RULER_H, c.width - LABEL_W, th);
+      ctx.font = transFont(); ctx.textBaseline = 'middle';
+      pg.transcript.segments.forEach((s, i) => {
+        const x0 = secToX(s.start), x1 = secToX(s.end);
+        ctx.fillStyle = (i % 2) ? 'rgba(94,200,255,0.12)' : 'rgba(94,200,255,0.05)';
+        ctx.fillRect(x0, RULER_H, Math.max(1, x1 - x0), th);
+        ctx.fillStyle = '#a8c4d8';
+        const txt = fitText(ctx, s.text, x1 - x0 - 5);
+        if (txt) ctx.fillText(txt, x0 + 3, RULER_H + th / 2 + 0.5);
+      });
+    }
+    // Lane row stripes (labels are drawn sticky-left at the very end so
+    // they stay in view while the editor scrolls horizontally).
     pg.lanes.forEach((a, i) => {
       const y = laneTop(i);
       ctx.fillStyle = (i % 2) ? '#181820' : '#14141b';
       ctx.fillRect(LABEL_W, y, c.width - LABEL_W, ROW_H);
-      ctx.fillStyle = '#cfcfe0'; ctx.font = '10px Arial'; ctx.textAlign = 'right';
-      ctx.fillText(a.label.slice(0, 14), LABEL_W - 6, y + ROW_H / 2);
-      ctx.textAlign = 'left';
     });
-    // Recording strip — how far Nadia's audio extends. Clips should
-    // cover this; the bare orange tail is what's still uncovered.
+    // Audio waveform — a centered band filling the editor, behind clips.
+    drawWaveform(ctx, c);
+    // Audio extent strip just under the ruler.
     if (pg.recDur > 0) {
-      ctx.fillStyle = '#e6a23c'; ctx.globalAlpha = 0.9;
-      ctx.fillRect(secToX(0), RULER_H - 5, pg.recDur * pxPerSec(), 4);
+      ctx.fillStyle = '#5ec8ff'; ctx.globalAlpha = 0.55;
+      ctx.fillRect(secToX(0), RULER_H - 4, pg.recDur * pg.pxPerSec, 3);
       ctx.globalAlpha = 1;
     }
     // Clips — with their ease ramps: attack triangle inside the head,
@@ -3616,14 +4333,14 @@ init();
       if (li < 0) return;
       const fi = (clip.fade_in_sec != null) ? clip.fade_in_sec : pg.defaultFade;
       const fo = (clip.fade_out_sec != null) ? clip.fade_out_sec : pg.defaultFade;
-      const x = secToX(clip.start_sec), w = Math.max(3, clip.duration_sec * pxPerSec());
+      const x = secToX(clip.start_sec), w = Math.max(3, clip.duration_sec * pg.pxPerSec);
       const y = laneTop(li) + 3, h = ROW_H - 6;
       const col = COLORS[li % COLORS.length];
       ctx.fillStyle = col;
       ctx.globalAlpha = 0.85; ctx.fillRect(x, y, w, h);
       // Release tail (past the clip's end).
       if (fo > 0) {
-        const fw = fo * pxPerSec();
+        const fw = fo * pg.pxPerSec;
         const grad = ctx.createLinearGradient(x + w, 0, x + w + fw, 0);
         grad.addColorStop(0, col); grad.addColorStop(1, 'transparent');
         ctx.globalAlpha = 0.4; ctx.fillStyle = grad;
@@ -3632,7 +4349,7 @@ init();
       ctx.globalAlpha = 1;
       // Attack ramp drawn as a darker wedge over the head.
       if (fi > 0) {
-        const fw = Math.min(w, fi * pxPerSec());
+        const fw = Math.min(w, fi * pg.pxPerSec);
         ctx.fillStyle = '#0006';
         ctx.beginPath();
         ctx.moveTo(x, y); ctx.lineTo(x + fw, y); ctx.lineTo(x, y + h);
@@ -3641,6 +4358,16 @@ init();
       ctx.strokeStyle = '#0008'; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.fillStyle = '#000a'; ctx.font = '9px Arial';
       ctx.fillText(`${clip.duration_sec.toFixed(1)}s`, x + 3, y + h / 2);
+      // DAW-style fade handles: squares on the top edge — drag the left
+      // one to shape the attack, the right one the release tail.
+      const hy = y + 1;
+      const hxi = x + Math.min(w, fi * pg.pxPerSec);
+      const hxo = x + w + fo * pg.pxPerSec;
+      ctx.strokeStyle = '#ffffff88';
+      ctx.beginPath(); ctx.moveTo(x + w, y + h); ctx.lineTo(hxo, hy); ctx.stroke();
+      ctx.fillStyle = '#e8e8f4'; ctx.strokeStyle = '#000c';
+      ctx.fillRect(hxi - 3, hy - 3, 6, 6); ctx.strokeRect(hxi - 3.5, hy - 3.5, 7, 7);
+      ctx.fillRect(hxo - 3, hy - 3, 6, 6); ctx.strokeRect(hxo - 3.5, hy - 3.5, 7, 7);
     });
     // Cue marker (▶ starts here; click the ruler to move it).
     if (pg.cueSec > 0) {
@@ -3660,6 +4387,55 @@ init();
       ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height); ctx.stroke();
       ctx.lineWidth = 1;
     }
+    drawStickyLabels(ctx, c);
+  }
+
+  function drawWaveform(ctx, c) {
+    const wv = pg.wave;
+    if (!wv || !wv.peaks || wv.peaks.length < 2) return;
+    const n = wv.peaks.length;
+    const dur = wv.duration_sec || pg.totalSec;
+    const midY = (RULER_H + c.height) / 2;
+    const halfH = (c.height - RULER_H) * 0.46;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const x = secToX(i / (n - 1) * dur);
+      i ? ctx.lineTo(x, midY - wv.peaks[i] * halfH)
+        : ctx.moveTo(x, midY - wv.peaks[i] * halfH);
+    }
+    for (let i = n - 1; i >= 0; i--) {
+      ctx.lineTo(secToX(i / (n - 1) * dur), midY + wv.peaks[i] * halfH);
+    }
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(94,200,255,0.11)';
+    ctx.fill();
+  }
+
+  // Lane labels + ruler corner, painted at the current scroll offset so the
+  // label column stays pinned to the left while the track scrolls.
+  function drawStickyLabels(ctx, c) {
+    const wrap = document.getElementById('pg-timeline-wrap');
+    const sx = wrap ? wrap.scrollLeft : 0;
+    ctx.fillStyle = '#15151c'; ctx.fillRect(sx, 0, LABEL_W, c.height);
+    ctx.fillStyle = '#2a2a34'; ctx.fillRect(sx, 0, LABEL_W, RULER_H);
+    ctx.font = '10px Arial'; ctx.textBaseline = 'middle'; ctx.textAlign = 'right';
+    if (transH()) {
+      ctx.fillStyle = '#6a7a88';
+      ctx.font = '9px Arial';
+      ctx.fillText('words', sx + LABEL_W - 6, RULER_H + transH() / 2);
+      ctx.font = '10px Arial';
+    }
+    pg.lanes.forEach((a, i) => {
+      const y = laneTop(i);
+      ctx.fillStyle = (i % 2) ? '#181820' : '#14141b';
+      ctx.fillRect(sx, y, LABEL_W, ROW_H);
+      ctx.fillStyle = (a.id && a.id.indexOf('wled_') === 0) ? '#7fd6ff' : '#cfcfe0';
+      ctx.fillText(a.label.slice(0, 14), sx + LABEL_W - 6, y + ROW_H / 2);
+    });
+    ctx.textAlign = 'left';
+    ctx.strokeStyle = '#333';
+    ctx.beginPath(); ctx.moveTo(sx + LABEL_W + 0.5, 0);
+    ctx.lineTo(sx + LABEL_W + 0.5, c.height); ctx.stroke();
   }
 
   function clipAt(x, y) {
@@ -3674,6 +4450,27 @@ init();
     return null;
   }
 
+  // Fade-handle hit test — the little squares live on the clip's top
+  // edge (fade-in inside the head, fade-out past the end), so they get
+  // first grab priority over move/resize.
+  function fadeHandleAt(x, y) {
+    for (const clip of pg.timeline) {
+      const li = pg.lanes.findIndex(l => l.id === clip.animation);
+      if (li < 0) continue;
+      const cy = laneTop(li) + 4;               // handle center row
+      if (y < cy - 5 || y > cy + 7) continue;
+      const fi = (clip.fade_in_sec != null) ? clip.fade_in_sec : pg.defaultFade;
+      const fo = (clip.fade_out_sec != null) ? clip.fade_out_sec : pg.defaultFade;
+      const x0 = secToX(clip.start_sec);
+      const w = Math.max(3, clip.duration_sec * pg.pxPerSec);
+      if (Math.abs(x - (x0 + w + fo * pg.pxPerSec)) <= 5)
+        return { clip, mode: 'fadeout' };
+      if (Math.abs(x - (x0 + Math.min(w, fi * pg.pxPerSec))) <= 5)
+        return { clip, mode: 'fadein' };
+    }
+    return null;
+  }
+
   function evtXY(e) {
     const r = pg.canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
@@ -3681,10 +4478,12 @@ init();
 
   function onDown(e) {
     const { x, y } = evtXY(e);
-    // Clicking the ruler sets the cue point — and jumps there live if
-    // a sequence is already playing.
-    if (y < RULER_H && x >= LABEL_W) { seekTo(xToSec(x)); return; }
+    // Clicking the ruler (or the transcript band) sets the cue point —
+    // and jumps there live if a sequence is already playing.
+    if (y < RULER_H + transH() && x >= LABEL_W) { seekTo(xToSec(x)); return; }
     if (x < LABEL_W || y < RULER_H) return;
+    const fh = fadeHandleAt(x, y);
+    if (fh) { pg.drag = { mode: fh.mode, clip: fh.clip, grabSec: 0 }; return; }
     const li = laneAtY(y);
     if (li < 0 || li >= pg.lanes.length) return;
     const hit = clipAt(x, y);
@@ -3700,11 +4499,26 @@ init();
     drawTimeline();
   }
   function onMove(e) {
-    if (!pg.drag) return;
+    if (!pg.drag) {
+      // Hover feedback: the fade handles are small — show a resize
+      // cursor when the mouse is over one.
+      if (pg.canvas && e.target === pg.canvas) {
+        const { x, y } = evtXY(e);
+        pg.canvas.style.cursor = fadeHandleAt(x, y) ? 'ew-resize' : '';
+      }
+      return;
+    }
     const { x } = evtXY(e);
     const clip = pg.drag.clip;
     if (pg.drag.mode === 'move') {
       clip.start_sec = Math.max(0, Math.min(pg.totalSec - clip.duration_sec, xToSec(x) - pg.drag.grabSec));
+    } else if (pg.drag.mode === 'fadein') {
+      clip.fade_in_sec = Math.round(Math.max(0, Math.min(clip.duration_sec,
+        xToSec(x) - clip.start_sec)) * 20) / 20;
+    } else if (pg.drag.mode === 'fadeout') {
+      const end = clip.start_sec + clip.duration_sec;
+      clip.fade_out_sec = Math.round(Math.max(0, Math.min(30,
+        xToSec(x) - end)) * 20) / 20;
     } else {
       clip.duration_sec = Math.max(0.2, Math.min(pg.totalSec - clip.start_sec, xToSec(x) - clip.start_sec));
     }
@@ -3791,10 +4605,38 @@ init();
     window.addEventListener('mouseup', onUp);
     pg.canvas.addEventListener('dblclick', onDbl);
 
-    const lenSel = document.getElementById('pg-length');
-    if (lenSel) { pg.minSec = parseInt(lenSel.value, 10) || 60; updateTotalSec();
-      lenSel.onchange = () => { pg.minSec = parseInt(lenSel.value, 10) || 60;
-        updateTotalSec(); sizeCanvas(); drawTimeline(); }; }
+    // Zoom (pixels-per-second). Recenter the view on the same time after a
+    // zoom so the playhead/area you were looking at stays put-ish.
+    const zoom = document.getElementById('pg-zoom');
+    if (zoom) {
+      pg.pxPerSec = parseInt(zoom.value, 10) || 12;
+      zoom.oninput = () => {
+        const wrap = document.getElementById('pg-timeline-wrap');
+        const anchorSec = wrap ? xToSec(wrap.scrollLeft + LABEL_W + 1) : 0;
+        pg.pxPerSec = parseInt(zoom.value, 10) || 12;
+        sizeCanvas(); drawTimeline();
+        if (wrap) wrap.scrollLeft = Math.max(0, secToX(anchorSec) - LABEL_W - 1);
+      };
+    }
+    // Redraw on horizontal scroll so the sticky label column follows.
+    const wrap0 = document.getElementById('pg-timeline-wrap');
+    if (wrap0) wrap0.addEventListener('scroll', () => requestAnimationFrame(drawTimeline));
+
+    // Wide mode — stretch the editor to the full window width and bump
+    // the transcript type up a size. Remembered across visits.
+    const wideBtn = document.getElementById('pg-wide');
+    const applyWide = () => {
+      if (wrap0) wrap0.classList.toggle('pg-wide', pg.wide);
+      if (wideBtn) wideBtn.classList.toggle('active', pg.wide);
+      sizeCanvas(); drawTimeline();
+    };
+    try { pg.wide = localStorage.getItem('pgWide') === '1'; } catch {}
+    if (wideBtn) wideBtn.onclick = () => {
+      pg.wide = !pg.wide;
+      try { localStorage.setItem('pgWide', pg.wide ? '1' : '0'); } catch {}
+      applyWide();
+    };
+    applyWide();
 
     const play = async (withRec) => {
       pg.withRec = withRec;
@@ -3809,16 +4651,13 @@ init();
       pg.timeline = []; drawTimeline(); await saveTimeline();
     };
 
-    // Recording.
-    const fileInput = document.getElementById('pg-rec-file');
-    if (fileInput) fileInput.onchange = async () => {
-      const f = fileInput.files && fileInput.files[0];
-      if (!f) return;
-      const st = document.getElementById('pg-rec-status'); if (st) st.textContent = 'uploading…';
-      try {
-        await fetch('/api/playground/recording?name=' + encodeURIComponent(f.name),
-                    { method: 'POST', body: f });
-      } catch {}
+    // Meditation selection — bind the editor to a meditation's track.
+    const medSel = document.getElementById('pg-med-select');
+    if (medSel) medSel.onchange = async () => {
+      if (!medSel.value) return;
+      await pgPost('/select/' + encodeURIComponent(medSel.value));
+      pg.wave = null;                     // force a waveform+transcript reload
+      pg.transcript = null;
       pgRefresh();
     };
     document.getElementById('pg-rec-play').onclick = async () => { await pgPost('/recording/play'); };

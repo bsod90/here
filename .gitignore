@@ -55,3 +55,4 @@ tmp/
 # Audio backdrops + large media (synced to the Pi at deploy time,
 # never tracked).
 media/
+firmware/_staged/

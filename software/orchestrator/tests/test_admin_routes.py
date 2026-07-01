@@ -7,6 +7,7 @@ installed (it's a dev-only dependency, not in requirements.txt).
 """
 import gzip
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ except ImportError:                  # pragma: no cover
 from audio import AudioPlayer
 from config import ConfigManager
 from playground import Playground
+from meditation import MeditationController
 from admin.routes import create_app
 from admin.routes import wled as wled_routes
 
@@ -58,13 +60,19 @@ class AdminAppFixture(unittest.TestCase):
         self.media_dir = root / "media"
         self.media_dir.mkdir()
         self.config.set("audio", {"media_dir": str(self.media_dir)})
+        # Stand-in files so the default meditation items read as present.
+        for it in (self.config.get("audio") or {}).get("meditation", {}).get("items", []):
+            (self.media_dir / it["file"]).write_bytes(b"x")
         self.engine = StubEngine()
         self.transport = StubTransport(self.config.get("targets"))
         self.audio = AudioPlayer(media_dir=self.media_dir,
                                  tracks=(self.config.get("audio") or {}).get("tracks"))
         self.playground = Playground(self.config, audio=self.audio)
+        self.meditation = MeditationController(
+            self.config, self.engine, self.audio, media_dir=self.media_dir)
         app = create_app(self.config, self.engine, self.transport,
-                         audio=self.audio, playground=self.playground)
+                         audio=self.audio, playground=self.playground,
+                         meditation=self.meditation)
         self.client = TestClient(app)
 
     def tearDown(self):
@@ -192,6 +200,43 @@ class TestAudioRoutes(AdminAppFixture):
                                                 "volume": 7})
         self.assertEqual(r.json()["tracks"]["ocean"]["volume"], 1.0)
 
+    def test_snapshot_includes_meditation(self):
+        r = self.client.get("/api/audio")
+        self.assertIn("meditation", r.json())
+        self.assertIn("items", r.json()["meditation"])
+
+    def test_meditation_get_lists_items(self):
+        r = self.client.get("/api/meditation")
+        self.assertEqual(r.status_code, 200)
+        ids = [i["id"] for i in r.json()["items"]]
+        self.assertEqual(ids, ["med1", "med2"])
+
+    def test_put_meditation_volume_persists(self):
+        r = self.client.put("/api/meditation", json={"volume": 0.4})
+        self.assertEqual(r.status_code, 200)
+        self.assertAlmostEqual(r.json()["volume"], 0.4)
+        self.assertAlmostEqual(
+            self.config.get("audio")["meditation"]["volume"], 0.4)
+
+    def test_put_meditation_toggle_item(self):
+        r = self.client.put("/api/meditation",
+                            json={"id": "med2", "enabled": True})
+        self.assertEqual(r.status_code, 200)
+        items = {i["id"]: i["enabled"] for i in r.json()["items"]}
+        self.assertTrue(items["med2"])
+        saved = {i["id"]: i["enabled"]
+                 for i in self.config.get("audio")["meditation"]["items"]}
+        self.assertTrue(saved["med2"])
+
+    def test_put_meditation_unknown_id(self):
+        r = self.client.put("/api/meditation",
+                            json={"id": "nope", "enabled": True})
+        self.assertEqual(r.status_code, 404)
+
+    def test_put_meditation_bad_volume(self):
+        r = self.client.put("/api/meditation", json={"volume": "loud"})
+        self.assertEqual(r.status_code, 400)
+
 
 class TestPlaygroundRoutes(AdminAppFixture):
 
@@ -212,31 +257,56 @@ class TestPlaygroundRoutes(AdminAppFixture):
         ]})
         self.assertEqual(len(r.json()["timeline"]), 1)
 
-    def test_upload_sanitizes_filename(self):
-        r = self.client.post("/api/playground/recording",
-                             params={"name": "../../etc/passwd.mp3"},
-                             content=b"FAKE-MP3-DATA")
+    def test_snapshot_lists_meditations_and_wled(self):
+        snap = self.client.get("/api/playground").json()
+        self.assertIn("meditations", snap)
+        self.assertIn("wled", snap)
+        self.assertIn("palettes", snap)
+        self.assertTrue(any(e["id"] == "wled_noise2d" for e in snap["wled"]))
+
+    def test_select_binds_meditation(self):
+        meds = self.client.get("/api/playground").json()["meditations"]
+        if not meds:
+            self.skipTest("no meditations configured in fixture")
+        mid = meds[0]["id"]
+        r = self.client.post(f"/api/playground/select/{mid}")
         self.assertEqual(r.status_code, 200)
-        saved = r.json()["recording_file"]
-        # Slashes are replaced, so the name can't traverse out of the
-        # playground dir (".." without a separator is just a filename).
-        self.assertNotIn("/", saved)
-        self.assertFalse(saved.startswith("."))
-        files = list((self.media_dir / "playground").iterdir())
-        self.assertEqual(len(files), 1)
-        self.assertEqual(files[0].read_bytes(), b"FAKE-MP3-DATA")
-        self.assertEqual(files[0].resolve().parent,
-                         (self.media_dir / "playground").resolve())
+        self.assertEqual(r.json()["selected"], mid)
 
-    def test_upload_rejects_bad_extension(self):
-        r = self.client.post("/api/playground/recording",
-                             params={"name": "evil.sh"}, content=b"x")
-        self.assertEqual(r.status_code, 400)
+    def test_select_unknown_meditation(self):
+        r = self.client.post("/api/playground/select/nope")
+        self.assertEqual(r.status_code, 404)
 
-    def test_upload_rejects_empty_body(self):
-        r = self.client.post("/api/playground/recording",
-                             params={"name": "a.mp3"}, content=b"")
-        self.assertEqual(r.status_code, 400)
+    def test_waveform_unknown_meditation(self):
+        r = self.client.get("/api/playground/waveform/nope")
+        self.assertEqual(r.status_code, 404)
+
+    def test_transcript_unknown_meditation(self):
+        r = self.client.get("/api/playground/transcript/nope")
+        self.assertEqual(r.status_code, 404)
+
+    def test_transcript_missing_sidecar(self):
+        meds = self.client.get("/api/playground").json()["meditations"]
+        if not meds:
+            self.skipTest("no meditations configured in fixture")
+        r = self.client.get(f"/api/playground/transcript/{meds[0]['id']}")
+        self.assertEqual(r.status_code, 404)
+
+    def test_transcript_served_from_sidecar(self):
+        meds = self.client.get("/api/playground").json()["meditations"]
+        if not meds:
+            self.skipTest("no meditations configured in fixture")
+        med = meds[0]
+        sidecar = self.media_dir / (med["file"] + ".transcript.json")
+        sidecar.write_text(json.dumps({
+            "language": "en",
+            "segments": [{"start": 1.5, "end": 3.0, "text": "breathe in"}],
+        }))
+        r = self.client.get(f"/api/playground/transcript/{med['id']}")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["language"], "en")
+        self.assertEqual(body["segments"][0]["text"], "breathe in")
 
 
 class FakeUpstream:

@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS telemetry_minutes (
     mode_durations  TEXT    NOT NULL,
     leg1_g          REAL    NOT NULL,
     leg2_g          REAL    NOT NULL,
-    total_g         REAL    NOT NULL
+    total_g         REAL    NOT NULL,
+    leg1_mv         REAL,
+    leg2_mv         REAL
 );
 """
 
@@ -61,10 +63,19 @@ class TelemetryHistory:
         self._mode_seconds: dict[str, float] = {}
         self._leg1_samples: list[float] = []
         self._leg2_samples: list[float] = []
+        self._leg1_mv_samples: list[float] = []
+        self._leg2_mv_samples: list[float] = []
         # Ensure parent dir exists; init schema on a dedicated writer connection.
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._writer = sqlite3.connect(db_path, check_same_thread=False)
         self._writer.executescript(_SCHEMA)
+        # Migrate DBs created before the per-leg battery columns existed.
+        for col in ("leg1_mv", "leg2_mv"):
+            try:
+                self._writer.execute(
+                    f"ALTER TABLE telemetry_minutes ADD COLUMN {col} REAL")
+            except sqlite3.OperationalError:
+                pass  # column already present
         self._writer.commit()
 
     # ── Lifecycle ───────────────────────────────────────────
@@ -99,7 +110,8 @@ class TelemetryHistory:
 
     def _has_data(self) -> bool:
         return bool(self._mode_seconds or self._energy_wh
-                    or self._leg1_samples or self._leg2_samples)
+                    or self._leg1_samples or self._leg2_samples
+                    or self._leg1_mv_samples or self._leg2_mv_samples)
 
     def _loop(self) -> None:
         last_t = time.monotonic()
@@ -146,24 +158,39 @@ class TelemetryHistory:
                 if len(legs) >= 2:
                     self._leg1_samples.append(float(legs[0].get("grams", 0.0)))
                     self._leg2_samples.append(float(legs[1].get("grams", 0.0)))
+                    # Battery (mV) — only when the leg is actually reporting;
+                    # stale/never-seen legs return None and shouldn't drag the
+                    # average to zero.
+                    b1, b2 = legs[0].get("battery_mv"), legs[1].get("battery_mv")
+                    if b1 is not None:
+                        self._leg1_mv_samples.append(float(b1))
+                    if b2 is not None:
+                        self._leg2_mv_samples.append(float(b2))
             except Exception:
                 pass
 
     # ── Persistence ────────────────────────────────────────
+    @staticmethod
+    def _avg(samples: list[float]):
+        return sum(samples) / len(samples) if samples else None
+
     def _flush(self, ts: int) -> None:
         leg1 = (sum(self._leg1_samples) / len(self._leg1_samples)
                 if self._leg1_samples else 0.0)
         leg2 = (sum(self._leg2_samples) / len(self._leg2_samples)
                 if self._leg2_samples else 0.0)
+        leg1_mv = self._avg(self._leg1_mv_samples)  # None when no reports
+        leg2_mv = self._avg(self._leg2_mv_samples)
         try:
             with self._writer:
                 self._writer.execute(
                     "INSERT OR REPLACE INTO telemetry_minutes "
-                    "(ts, energy_wh, mode_durations, leg1_g, leg2_g, total_g) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    "(ts, energy_wh, mode_durations, leg1_g, leg2_g, total_g, "
+                    "leg1_mv, leg2_mv) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (ts, self._energy_wh,
                      json.dumps(self._mode_seconds),
-                     leg1, leg2, leg1 + leg2),
+                     leg1, leg2, leg1 + leg2, leg1_mv, leg2_mv),
                 )
                 cutoff = int(time.time()) - self.RETENTION_DAYS * 86400
                 self._writer.execute(
@@ -175,6 +202,8 @@ class TelemetryHistory:
         self._mode_seconds = {}
         self._leg1_samples = []
         self._leg2_samples = []
+        self._leg1_mv_samples = []
+        self._leg2_mv_samples = []
 
     # ── Query ──────────────────────────────────────────────
     def _bucket_snapshot(self) -> dict:
@@ -189,6 +218,8 @@ class TelemetryHistory:
             "leg1_g": leg1,
             "leg2_g": leg2,
             "total_g": leg1 + leg2,
+            "leg1_mv": self._avg(self._leg1_mv_samples),
+            "leg2_mv": self._avg(self._leg2_mv_samples),
             "in_progress": True,
         }
 
@@ -203,7 +234,8 @@ class TelemetryHistory:
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
         try:
             cur = conn.execute(
-                "SELECT ts, energy_wh, mode_durations, leg1_g, leg2_g, total_g "
+                "SELECT ts, energy_wh, mode_durations, leg1_g, leg2_g, total_g, "
+                "leg1_mv, leg2_mv "
                 "FROM telemetry_minutes WHERE ts >= ? AND ts <= ? "
                 "ORDER BY ts ASC",
                 (start, end),
@@ -221,6 +253,8 @@ class TelemetryHistory:
                     "leg1_g": row[3],
                     "leg2_g": row[4],
                     "total_g": row[5],
+                    "leg1_mv": row[6],
+                    "leg2_mv": row[7],
                 })
         finally:
             conn.close()

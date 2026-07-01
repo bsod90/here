@@ -65,35 +65,8 @@ def _get_np_arrays():
     return _NP_DISTANCES, _NP_ANGLES
 
 
-FADE_IN_S = 16.5
+FADE_IN_S = 6.0          # smooth dissolve-in for standby/ripples → breathing
 FADE_OUT_S = 7.5
-
-# Heartbeat phase parameters. The first chunk of the fade-in is a slow
-# 60 bpm lub-dub pulse rather than a single growing breath — gives the
-# emergence a "waking up" feel and matches the user's mental model of
-# how the circle should appear.
-_HEART_FRAC      = 0.40         # first 40% of fade-in is the heartbeat
-_HEART_PERIOD_MS = 1000.0       # exactly 60 bpm
-_HEART_R_BASE    = 3.0          # rest radius (LEDs)
-_HEART_R_AMP     = 0.40         # peak excursion above rest — subtle
-_LUB_CENTER_MS   = 110.0
-_LUB_SIGMA_MS    = 55.0
-_DUB_CENTER_MS   = 360.0
-_DUB_SIGMA_MS    = 70.0
-_DUB_AMP         = 0.50
-
-
-def _heartbeat_envelope(time_ms: float) -> float:
-    """Two-peak ('lub-dub') Gaussian pulse within each 1 s window.
-    Returns 0..1; rest of the period is 0 (the long quiet between
-    beats)."""
-    t = time_ms % _HEART_PERIOD_MS
-    lub = math.exp(-((t - _LUB_CENTER_MS) ** 2)
-                   / (2.0 * _LUB_SIGMA_MS * _LUB_SIGMA_MS))
-    dub = _DUB_AMP * math.exp(
-        -((t - _DUB_CENTER_MS) ** 2)
-        / (2.0 * _DUB_SIGMA_MS * _DUB_SIGMA_MS))
-    return min(1.0, lub + dub)
 
 
 def _apply_fade(params: dict, fade_in: float | None,
@@ -107,33 +80,14 @@ def _apply_fade(params: dict, fade_in: float | None,
 
     if fade_in is not None:
         u = max(0.0, min(1.0, fade_in))
-        if u < _HEART_FRAC:
-            # Phase 1 — 60 bpm heartbeat. Setting min_radius == max_radius
-            # means the breathing renderer's breath_phase math has no
-            # range to lerp through, so the circle sits at whatever
-            # radius we pass; the actual motion comes from this
-            # heartbeat envelope, not from the breath cycle.
-            pulse = _heartbeat_envelope(time_ms)
-            r = _HEART_R_BASE + _HEART_R_AMP * pulse
-            p["min_radius"] = r
-            p["max_radius"] = r
-            uu = u / _HEART_FRAC
-            # Brightness ramps from 0 to ~85% across the heartbeat
-            # phase so the first beats are barely-there glimmers and
-            # the last beats are clearly visible.
-            p["brightness"] = brightness * 0.85 * (uu ** 1.2)
-        else:
-            # Phase 2 — the natural breath cycle takes over at the
-            # configured full radii. No "slow grow toward full" — that
-            # read as a reluctant half-expansion; the user wants the
-            # first real inhale to be a real inhale. We still ramp
-            # brightness up the last 15% so the heartbeat → breath
-            # handoff doesn't pop.
-            POST_HEART_BRIGHT_RAMP = 0.10
-            bramp = min(1.0, (u - _HEART_FRAC) / POST_HEART_BRIGHT_RAMP)
-            p["brightness"] = brightness * (0.85 + 0.15 * bramp)
-            # min_radius / max_radius are left at their configured
-            # values so the breath cycle plays full-amplitude.
+        # Single smooth dissolve: the breath cycle plays at FULL amplitude
+        # from the very first frame (a real inhale), and only the brightness
+        # ramps up — so the circle gently materialises as one continuous
+        # event. (An earlier version had a two-phase heartbeat→breath
+        # emergence; with standby fading cleanly away it read as the
+        # animation playing twice / restarting.)
+        p["brightness"] = brightness * (u ** 1.4)
+        # min_radius / max_radius left at their configured values.
 
     if fade_out is not None:
         # Smooth continuous shrink. CRITICAL: do NOT override the
@@ -213,7 +167,21 @@ def _apply_voice_shimmer(p: dict, time_ms: float) -> dict:
 
 def render(frame: bytearray, time_ms: float, params: dict,
            *, fade_in: float | None = None, fade_out: float | None = None,
-           phase: str | None = None):
+           phase: str | None = None, state: dict | None = None):
+    # ── Breath-clock anchoring ────────────────────────────────────
+    # The breath cycle must START at the beginning of an inhale (small
+    # collapsed circle → expand → collapse), not join the global clock
+    # mid-cycle wherever it happens to be. We stamp the anchor on the first
+    # frame of a mode entry and run the cycle from t=0. `state` is reset by
+    # the engine on each mode entry, so every entry starts with a fresh first
+    # inhale; the anchor then persists through fade-out so there's never a
+    # phase jump.
+    breath_ms = time_ms
+    if state is not None:
+        if "breath_t0" not in state:
+            state["breath_t0"] = time_ms
+        breath_ms = time_ms - state["breath_t0"]
+
     if fade_in is not None or fade_out is not None:
         params = _apply_fade(params, fade_in, fade_out, time_ms)
     # Session phase overrides — only honored outside of explicit
@@ -242,12 +210,12 @@ def render(frame: bytearray, time_ms: float, params: dict,
 
     dist, angles = _get_np_arrays()
 
-    # 4-phase breath
-    breath = _breath_phase(time_ms, params)
+    # 4-phase breath (on the anchored breath clock)
+    breath = _breath_phase(breath_ms, params)
     radius = min_r + breath * (max_r - min_r)
 
     # Trail: same but delayed
-    trail_breath = _breath_phase(time_ms - trail_delay, params)
+    trail_breath = _breath_phase(breath_ms - trail_delay, params)
     trail_radius = min_r + trail_breath * (max_r - min_r)
 
     dfr = dist - radius
@@ -314,8 +282,8 @@ def render(frame: bytearray, time_ms: float, params: dict,
             reverse = spin.get("yoyo_reverse", True)
 
             # Current and previous breath values → velocity
-            b_now = _breath_phase(time_ms, params)
-            b_prev = _breath_phase(time_ms - dt, params)
+            b_now = _breath_phase(breath_ms, params)
+            b_prev = _breath_phase(breath_ms - dt, params)
             velocity = (b_now - b_prev) / dt * 1000  # breath units per second
             if not reverse:
                 velocity = abs(velocity)  # always spin same direction
