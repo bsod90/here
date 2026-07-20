@@ -285,10 +285,10 @@ DEFAULT_CONFIG = {
         # clips: [{animation, start_sec, duration_sec, fade_in_sec?,
         # fade_out_sec?}]. The editor binds to one meditation at a time.
         # med4 ships a placeholder (breathing circle wall-to-wall,
-        # 252.8 s = the recording's length) until it gets a real score.
+        # 190.5 s = the recording's length) until it gets a real score.
         "tracks": {
             "med4": [{"animation": "breathing", "start_sec": 0.0,
-                      "duration_sec": 252.8, "fade_in_sec": 2.0,
+                      "duration_sec": 190.5, "fade_in_sec": 2.0,
                       "fade_out_sec": 3.0}],
         },
         # Which meditation the editor is currently bound to.
