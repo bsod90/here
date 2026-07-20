@@ -26,7 +26,10 @@ DEFAULTS = {
     "off_cutoff": 0.02,      # LEDs whose wave sits below this go COMPLETELY OFF —
                              # real black holes in the field for contrast (0 = none)
     "speed": 0.45,           # shimmer pace (1 = slow, calm; 2 = twice as lively)
-    "tint": [255, 235, 205], # the color of the light (default: warm candle-white)
+    "tint": [235, 235, 210], # the color of the light — soft warm white with
+                             # red ≤ green, so the dim shimmer floor can never
+                             # quantize into red-dominant LEDs on the hardware
+                             # (the old candle tint's dim tail rendered red)
     "softness": 6.5,         # >1 = most LEDs sit near the dim floor with bright
                              # ripples drifting through; 1 = even spread; <1 = mostly bright
 

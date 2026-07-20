@@ -70,9 +70,8 @@ COLOR_ORDERS = {
     "GBR": (1, 2, 0), "BRG": (2, 0, 1), "BGR": (2, 1, 0),
 }
 
-# Mild gamma so low brightness still shows colour nicely.
-_GAMMA = np.array([int(((i / 255.0) ** 2.2) * 255.0 + 0.5)
-                   for i in range(256)], dtype=np.uint8)
+# Gamma (2.2) is applied in float inside render_frame — see the
+# dithering comment there for why there's no integer LUT.
 
 
 class _SpiStrip:
@@ -274,9 +273,18 @@ ANIMATIONS = {
 }
 
 
+# Time constant for easing the border toward the floor's dominant colour
+# (color_sync). ~3 s: transitions read as one animation "handing" its
+# colour to the border rather than a snap.
+_SYNC_TAU_S = 3.0
+
+
 class BorderController:
-    def __init__(self, config) -> None:
+    def __init__(self, config, frame_source=None) -> None:
         self._config = config
+        # Optional callable returning the matrix's latest rendered frame
+        # (raw RGB bytes) — the source for color_sync's dominant colour.
+        self._frame_source = frame_source
         self._lock = threading.Lock()
         self._strips: list[_SpiStrip] = []
         self._total = 0
@@ -285,6 +293,10 @@ class BorderController:
         self._t0 = 0.0
         self._rng = np.random.default_rng(1234)
         self._anim_params: dict = {}     # scratch for stateful anims (twinkle)
+        # Day/night gate (daynight.py): False → blackout, config untouched.
+        self.schedule_on = True
+        self._sync_rgb: np.ndarray | None = None   # eased dominant colour
+        self._dither_noise: np.ndarray | None = None  # fixed spatial dither
         self._build_strips()
 
     # ── Config ──────────────────────────────────────────────
@@ -312,6 +324,40 @@ class BorderController:
         """Re-open strips after a segment change."""
         self._build_strips()
         self._anim_params = {}
+        self._dither_noise = None
+
+    # ── Surface colour sync ─────────────────────────────────
+    def _update_sync_color(self, dt: float) -> None:
+        """Ease the border toward the dominant colour of whatever the
+        floor is currently showing. Dominant = luminance²-weighted mean
+        of the matrix frame (biases toward the bright content, ignores
+        the dark background), scaled to full value so the border's own
+        brightness knob keeps its meaning. A dark floor HOLDS the last
+        colour instead of dragging the border to grey."""
+        if self._frame_source is None:
+            return
+        try:
+            buf = self._frame_source()
+        except Exception:
+            return
+        if not buf or len(buf) % 3:
+            return
+        arr = np.frombuffer(buf, dtype=np.uint8).reshape(-1, 3).astype(np.float32)
+        w = arr.sum(axis=1)
+        w *= w
+        tot = float(w.sum())
+        if tot <= 1.0:
+            return                          # floor is dark → hold colour
+        dom = (arr * w[:, None]).sum(axis=0) / tot
+        peak = float(dom.max())
+        if peak <= 1.0:
+            return
+        target = dom * (255.0 / peak)
+        if self._sync_rgb is None:
+            self._sync_rgb = target
+        else:
+            k = 1.0 - math.exp(-max(0.0, dt) / _SYNC_TAU_S)
+            self._sync_rgb = self._sync_rgb + (target - self._sync_rgb) * k
 
     # ── Render loop ─────────────────────────────────────────
     def start(self) -> None:
@@ -332,6 +378,11 @@ class BorderController:
         name = cfg.get("animation", "pulse")
         fn = ANIMATIONS.get(name, anim_pulse)
         p = dict(cfg)
+        # color_sync (default ON): the colour-driven animations (solid /
+        # pulse / wave) follow the floor's dominant colour instead of the
+        # configured one. `_sync_rgb` is eased in _update_sync_color.
+        if cfg.get("color_sync", True) and self._sync_rgb is not None:
+            p["color"] = [float(c) for c in self._sync_rgb]
         p.update(self._anim_params)          # carry persistent anim state
         rgb = fn(t_s, n, p, self._rng)
         # persist any state the anim stashed under private keys (e.g. _tw)
@@ -340,15 +391,36 @@ class BorderController:
                 self._anim_params[k] = v
         bright = max(0.0, min(1.0, float(cfg.get("brightness", 0.5))))
         rgb = np.clip(rgb, 0, 255) * bright
-        out = rgb.astype(np.uint8)
-        return _GAMMA[out]
+        # Gamma in FLOAT, then SPATIAL dithering on the final 8-bit
+        # quantization: every pixel gets its own fixed offset before the
+        # floor. The old integer-LUT path collapsed the dim range this
+        # border lives in (~a dozen levels at 25% brightness) so slow
+        # fades stepped — the whole strip jumped a level at once. Fixed
+        # per-pixel thresholds spread those jumps across the strip (a
+        # fine ripple instead of a step). Crucially the offsets never
+        # change over time: a static colour renders IDENTICAL frames, so
+        # there's no temporal flicker — the failure mode of the previous
+        # error-diffusion dither, whose near-zero channels blinked 0↔1
+        # at a few Hz.
+        lin = (rgb / 255.0) ** 2.2 * 255.0
+        noise = self._dither_noise
+        if noise is None or noise.shape[0] != lin.shape[0]:
+            # ONE offset per PIXEL, shared across R/G/B (broadcast) — the
+            # rounding then can't shift hue, so a dim warm colour never
+            # quantizes into a lone red LED on the strip.
+            noise = np.random.default_rng(4242).random(
+                (lin.shape[0], 1)).astype(np.float32)
+            self._dither_noise = noise
+        out = np.floor(lin + noise)
+        return np.clip(out, 0, 255).astype(np.uint8)
 
     def _loop(self) -> None:
         cleared = False
         while self._running:
             cfg = self._cfg()
             fps = max(1.0, min(120.0, float(cfg.get("fps", 60))))
-            if not cfg.get("enabled") or self._total <= 0:
+            if not cfg.get("enabled") or not self.schedule_on \
+                    or self._total <= 0:
                 if not cleared:
                     self._blackout()
                     cleared = True
@@ -356,6 +428,8 @@ class BorderController:
                 continue
             cleared = False
             try:
+                if cfg.get("color_sync", True):
+                    self._update_sync_color(1.0 / fps)
                 t_s = time.monotonic() - self._t0
                 frame = self.render_frame(t_s, self._total, cfg)
                 self._push(frame)

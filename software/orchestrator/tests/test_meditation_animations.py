@@ -87,10 +87,52 @@ class TestMeditationAnimations(unittest.TestCase):
         self.assertLess(int(d.sum()), int(w.sum()))
 
 
+class TestRipplesRestMode(unittest.TestCase):
+    """The engine's `ripples` rest mode: pure black for `start_delay_s`,
+    then the playground's Underwater animation fades in slowly, using the
+    live config.playground.waves tuning."""
+
+    class _Cfg:
+        def __init__(self, d): self._d = d
+        def get(self, k): return self._d.get(k)
+
+    def _render(self, t_ms, state, cfg):
+        from types import SimpleNamespace
+        from animation_engine import _render_ripples
+        engine = SimpleNamespace(config=self._Cfg(cfg))
+        frame = bytearray(FRAME_BYTES)
+        _render_ripples(engine, frame, t_ms, None, None, state)
+        return np.frombuffer(bytes(frame), dtype=np.uint8)
+
+    def test_dark_beat_then_underwater_fades_in(self):
+        cfg = {"ripples": {"start_delay_s": 3.0, "fade_in_s": 2.0},
+               "playground": {}}
+        st = {}
+        self.assertEqual(int(self._render(0.0, st, cfg).max()), 0)
+        self.assertEqual(int(self._render(2_500.0, st, cfg).max()), 0)
+        early = int(self._render(3_400.0, st, cfg).sum())    # 20% into fade
+        late = int(self._render(8_000.0, st, cfg).sum())     # fully in
+        self.assertGreater(early, 0, "underwater never appeared")
+        self.assertGreater(late, early * 2, "fade-in is not gradual")
+
+    def test_uses_playground_waves_tuning(self):
+        # A tab-side tweak (here: light_amount 0) must show in the rest
+        # screen — the two stay in sync by construction.
+        base = {"ripples": {"start_delay_s": 0.0, "fade_in_s": 0.1}}
+        st1, st2 = {}, {}
+        cfg_plain = {**base, "playground": {}}
+        cfg_dim = {**base, "playground": {"waves": {"light_amount": 0.0}}}
+        self._render(0.0, st1, cfg_plain)        # stamp the mode clock…
+        self._render(0.0, st2, cfg_dim)
+        bright = int(self._render(5_000.0, st1, cfg_plain).sum())
+        dimmed = int(self._render(5_000.0, st2, cfg_dim).sum())
+        self.assertGreater(bright, 0)
+        self.assertLess(dimmed, bright)
+
+
 class TestRainRestScreen(unittest.TestCase):
-    """The post-meditation `ripples` rest screen (rain.py) holds pure
-    black for `start_delay_s` — the quiet after-meditation moment — and
-    only then fades the rain in."""
+    """rain.py (the playground's Water droplets) holds pure black for
+    `start_delay_s` and only then fades the rain in."""
 
     def _run(self, params, until_ms, step_ms=50.0):
         state = {}

@@ -91,6 +91,12 @@ class TestTimelineSanitization(PlaygroundFixture):
         c = self.pg.snapshot()["timeline"][0]
         self.assertNotIn("fade_in_sec", c)      # falls back to default
 
+    def test_has_track_reflects_timeline_content(self):
+        self.assertFalse(self.pg.has_track(self.pg._selected))
+        self.assertFalse(self.pg.has_track("nope"))
+        self.pg.set_timeline([clip("red", 0, 2)])
+        self.assertTrue(self.pg.has_track(self.pg._selected))
+
     def test_timeline_persists_to_config(self):
         self.pg.set_timeline([clip("red", 1, 2)])
         tracks = self.config.get("playground")["tracks"]
@@ -125,19 +131,42 @@ class TestTriggerAndPlayback(PlaygroundFixture):
         self.render(13_000.0)        # 3s in → blue
         self.assertEqual(self.calls[-1][0], "blue")
 
-    def test_sequence_ends_and_holds_last_clip(self):
-        # After the timeline finishes, the floor HOLDS the final clip's
-        # animation — it must NOT snap back to whatever button was
-        # pressed before play (e.g. a sunrise ending in disco).
+    def test_sequence_ends_to_black(self):
+        # After the timeline finishes, the floor stays BLACK — the final
+        # clip's fade-out is the ending. It must neither snap back to the
+        # button pressed before play NOR re-trigger the last clip's
+        # animation (the post-meditation "mandala ghost flash" bug).
         self.pg.trigger("blue")
         self.pg.set_timeline([clip("blue", 0, 1), clip("red", 1, 1)])
         self.pg.play()
         self.render(0.0)
         self.assertTrue(self.pg.snapshot()["playing"])
+        n_calls = len(self.calls)
         self.render(5_000.0)         # past the end
         self.assertFalse(self.pg.snapshot()["playing"])
         self.render(6_000.0)
-        self.assertEqual(self.calls[-1][0], "red")    # holds the LAST clip
+        self.assertEqual(len(self.calls), n_calls)    # no animation rendered
+        self.assertEqual(max(self.frame), 0)          # floor is dark
+
+    def test_stop_hold_black_leaves_floor_dark(self):
+        # The meditation hand-off stops playback WITHOUT falling back to
+        # the last-triggered animation.
+        self.pg.trigger("red")
+        self.pg.set_timeline([clip("blue", 0, 10)])
+        self.pg.play()
+        self.render(0.0)
+        self.pg.stop(hold_black=True)
+        self.render(1_000.0)
+        self.assertEqual(max(self.frame), 0)
+
+    def test_editor_stop_returns_to_triggered_animation(self):
+        self.pg.trigger("red")
+        self.pg.set_timeline([clip("blue", 0, 10)])
+        self.pg.play()
+        self.render(0.0)
+        self.pg.stop()                # the tab's ■ Stop keeps old behavior
+        self.render(1_000.0)
+        self.assertEqual(self.calls[-1][0], "red")
 
     def test_gap_between_clips_is_dark(self):
         self.pg.set_timeline([clip("red", 0, 1), clip("blue", 5, 1)])
@@ -264,10 +293,24 @@ class TestSnapshot(PlaygroundFixture):
     def test_builtin_animations_render_without_error(self):
         for anim in ("breathing", "standby", "flower", "welcome",
                      "talking", "chill", "winddown", "blobs", "ink", "noise", "mandala", "waves", "rain", "mandala2", "spiral", "disco", "sunflower",
-                     "meadow", "waterlily", "dandelion"):
+                     "meadow", "waterlily", "dandelion", "eyes"):
             self.pg.trigger(anim)
             for t in (0.0, 500.0, 2_000.0):
                 self.render(t)
+
+    def test_eyes_renders_and_blinks(self):
+        # Baked-frame animation: nonzero (inverted sketch glows), and the
+        # blink means different loop positions paint different frames.
+        self.pg.trigger("eyes")
+        # The engine keeps ONE state dict per mode visit; a fresh dict per
+        # render (the fixture default) would re-stamp the clock each frame.
+        state = {}
+        self.pg.render(self.frame, 100.0, state)   # stamps t0; fade starts
+        self.pg.render(self.frame, 2_100.0, state) # fade-in done → glows
+        a = bytes(self.frame)
+        self.assertGreater(max(a), 0)
+        self.pg.render(self.frame, 2_900.0, state) # ~0.8s on — mid-blink
+        self.assertNotEqual(bytes(self.frame), a)
 
 
 class TestRecordingThroughMixer(PlaygroundFixture):
@@ -338,3 +381,59 @@ class TestRecordingThroughMixer(PlaygroundFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEngineFadeOut(unittest.TestCase):
+    def test_render_playground_honors_fade_out(self):
+        # THE "meditation ended abruptly" bug: the engine's playground
+        # dispatcher dropped fade_out, so leaving playground mode rendered
+        # the timeline at full brightness through the whole crossfade and
+        # then snapped to black.
+        from types import SimpleNamespace
+        from animation_engine import _render_playground
+
+        class PG:
+            def render(self, frame, t_ms, state, fade_in=None):
+                frame[:] = bytes([200]) * len(frame)
+
+        engine = SimpleNamespace(playground=PG())
+        full = bytearray(FRAME_BYTES)
+        _render_playground(engine, full, 0.0, None, None, {})
+        mid = bytearray(FRAME_BYTES)
+        _render_playground(engine, mid, 0.0, None, 0.5, {})
+        out = bytearray(FRAME_BYTES)
+        _render_playground(engine, out, 0.0, None, 1.0, {})
+        self.assertEqual(full[0], 200)
+        self.assertAlmostEqual(mid[0], 100, delta=1)
+        self.assertEqual(out[0], 0)
+
+
+class TestMasterControls(PlaygroundFixture):
+    """Global dials over every playground animation."""
+
+    def test_master_brightness_scales_frame(self):
+        self.config.set("playground", {"master": {"brightness": 0.5}})
+        self.pg.trigger("blue")               # marker paints solid 200
+        self.render(1_000.0)
+        self.assertAlmostEqual(max(self.frame), 100, delta=2)
+
+    def test_master_speed_stretches_animation_clock(self):
+        self.config.set("playground", {"master": {"speed": 2.0}})
+        self.pg.trigger("red")
+        self.render(1_000.0)
+        t1 = self.calls[-1][1]
+        self.render(2_000.0)                  # +1 s real time
+        t2 = self.calls[-1][1]
+        self.assertAlmostEqual(t2 - t1, 2_000.0, delta=1.0)
+
+    def test_master_speed_leaves_timeline_position_alone(self):
+        # Sequenced sits must stay in sync with the voice: the SEQUENCE
+        # advances in real time even when animations run 2x.
+        self.config.set("playground", {"master": {"speed": 2.0}})
+        self.pg.set_timeline([clip("red", 0, 2), clip("blue", 2, 60)])
+        self.pg.play()
+        self.render(0.0)
+        self.render(1_000.0)                  # 1s real → still clip 1
+        self.assertEqual(self.calls[-1][0], "red")
+        self.render(3_000.0)                  # 3s real → clip 2
+        self.assertEqual(self.calls[-1][0], "blue")

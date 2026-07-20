@@ -30,12 +30,23 @@ def render(frame: bytearray, time_ms: float, params: dict, state: dict | None = 
     cols, rows = w.COLS, w.ROWS
 
     some = float(p["speed"]) / 4.0
-    t = now / 4.0
+    # Deliberate deviation from WLED's now/4 clock, in two parts:
+    #   * 16x slower — the original roil reads frantic on the floor.
+    #   * float lerp between the two neighbouring integer time-planes.
+    #     The FastLED noise TRUNCATES its z argument, so merely slowing
+    #     the clock doesn't calm the shimmer: every frame still crosses
+    #     a full integer quantum and the whole field ticks at frame
+    #     rate. Interpolating makes the field continuous in time, so a
+    #     slow clock actually LOOKS slow.
+    t = now / 64.0
+    jj, ii = np.meshgrid(np.arange(rows + 2), np.arange(cols + 2), indexing="ij")
+    zi = float(np.floor(t))
+    zf = t - zi
+    raw = (w.inoise8_raw(ii * some, jj * some, zi) * (1.0 - zf)
+           + w.inoise8_raw(ii * some, jj * some, zi + 1.0) * zf)
     # Height field over a +1 border so central differences stay in range.
     # `inoise8_raw/2` is stored in a uint8 in the firmware, so negative
     # values wrap — replicate that (it's part of the roiling look).
-    jj, ii = np.meshgrid(np.arange(rows + 2), np.arange(cols + 2), indexing="ij")
-    raw = w.inoise8_raw(ii * some, jj * some, t)
     bump = (np.trunc(raw / 2.0).astype(np.int64)) & 0xFF     # uint8 (rows+2, cols+2)
 
     nx = bump[1:-1, 2:] - bump[1:-1, :-2]                     # ∂/∂x  (rows, cols)

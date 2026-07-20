@@ -65,6 +65,7 @@ from animations import mandala2 as _mandala2
 from animations import mandala3 as _mandala3
 from animations import sunflower as _sunflower
 from animations import rain as _rain
+from animations import eyes as _eyes
 
 # WLED-ported effects (animations/wled_*.py). Grouped + tunable in the
 # playground's "WLED animations" section. Ported line-by-line from WLED
@@ -72,9 +73,11 @@ from animations import rain as _rain
 from animations import wled_distort as _w_distort
 from animations import wled_noise2d as _w_noise2d
 from animations import wled_sunrad as _w_sunrad
-# Not a WLED port — the MIDI engine's shimmering border (synth.py's
-# border-glow layer), but it lives in the same tunable-knobs section.
+# Not WLED ports — the MIDI engine's shimmering border (synth.py's
+# border-glow layer) and its flower variant, but they live in the same
+# tunable-knobs section.
 from animations import borderglow as _borderglow
+from animations import darkflower as _darkflower
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,10 @@ WLED_FX = [
     {"id": "border", "label": "Border (shimmer)", "mod": _borderglow, "palette": True,
      "knobs": [("speed", "Vibrato", 0, 255), ("intensity", "Shimmer", 0, 255),
                ("custom1", "Width", 16, 255), ("custom2", "Spin", 0, 255)]},
+    {"id": "darkflower", "label": "Dark flower", "mod": _darkflower, "palette": True,
+     "knobs": [("speed", "Vibrato", 0, 255), ("intensity", "Shimmer", 0, 255),
+               ("custom1", "Width", 16, 255), ("custom2", "Spin", 0, 255),
+               ("custom3", "Breath", 0, 255)]},
     {"id": "wled_distort", "label": "Distortion Waves", "mod": _w_distort, "palette": True,
      "knobs": [("speed", "Speed", 0, 255), ("intensity", "Scale", 0, 255)],
      "toggles": [("blue_off", "Blue off")]},
@@ -102,6 +109,9 @@ WLED_BY_ID = {fx["id"]: fx for fx in WLED_FX}
 # Gentle crossfade when entering/leaving the playground mode.
 FADE_IN_S = 2.0
 FADE_OUT_S = 2.0
+# Fade applied when the meditation recording is stopped mid-play
+# (editor ■ Stop, sequence end) — never cut the voice abruptly.
+REC_FADE_S = 3.0
 
 # The playground plays the SELECTED meditation's audio through the shared
 # mixer as a one-shot clip named `pg:<meditation-id>`. Each meditation has
@@ -117,6 +127,14 @@ def _med_clip(mid: str) -> str:
 
 # Default clip ease used when a timeline clip doesn't override it.
 DEFAULT_FADE_SEC = 1.5
+
+
+def _apply_master_brightness(frame: bytearray, b: float) -> None:
+    """Scale the finished frame by the global master brightness dial."""
+    if b >= 0.999:
+        return
+    arr = np.frombuffer(bytes(frame), dtype=np.uint8).astype(np.float32)
+    frame[:] = (arr * b).astype(np.uint8).tobytes()
 
 
 def _clear(frame: bytearray) -> None:
@@ -145,6 +163,12 @@ class Playground:
         # True while the engine's crossfade INTO playground mode is still
         # in flight — lets animations hold their intro until it's done.
         self._in_mode_fade = False
+        # Per-frame snapshot of config.playground (one deepcopy per frame,
+        # refreshed at the top of render()) + the global master dials'
+        # virtual clock (see render()).
+        self._frame_cfg: dict = self._config.get("playground") or {}
+        self._vt_ms = 0.0
+        self._vt_last_ms: float | None = None
         # Per-meditation event tracks, cached in memory (synced to config on
         # edits) so render doesn't deepcopy config every frame. Each track is
         # a seconds-timeline of animation clips bound to a meditation id.
@@ -191,7 +215,11 @@ class Playground:
 
         def pg_adapter(module, section):
             def adapter(frame, time_ms, state):
-                cfg = self._config.get("playground") or {}
+                # `_frame_cfg` is the playground config snapshotted ONCE
+                # per rendered frame (render() refreshes it) — live knob
+                # edits still apply next frame, without a config deepcopy
+                # per animation per frame.
+                cfg = self._frame_cfg
                 module.render(frame, time_ms, cfg.get(section) or {}, state)
             return adapter
 
@@ -208,6 +236,9 @@ class Playground:
             # but with its own livelier garden defaults + overrides
             # under config.playground.rain.
             "rain":       ("Water droplets", pg_adapter(_rain, "rain")),
+            # Hand-drawn blinking eyes baked from Dream_1.mp4 (see
+            # animations/eyes.py for the conversion recipe).
+            "eyes":       ("Eyes", pg_adapter(_eyes, "eyes")),
         }
         # WLED-ported effects share the same live-config adapter (their
         # tuned knobs live under config.playground.<id>).
@@ -293,6 +324,15 @@ class Playground:
                         "present": present, "duration_sec": dur})
         return out
 
+    def has_track(self, mid: str) -> bool:
+        """True when this meditation has a non-empty sequenced event-track —
+        the MeditationController uses it to decide whether a sit plays the
+        sequenced visuals or falls back to the breathing circle."""
+        with self._lock:
+            if mid == self._selected:
+                return bool(self._timeline)
+            return bool(self._tracks.get(mid))
+
     def select(self, mid: str) -> bool:
         """Bind the editor to a meditation: stash the current track, load the
         chosen meditation's track, persist the selection. Returns False for
@@ -370,6 +410,28 @@ class Playground:
             # `fade_in` is the engine's mode-crossfade progress (0..1, or
             # None outside a transition). Sequenced intros wait for it.
             self._in_mode_fade = fade_in is not None and fade_in < 1.0
+            # One config snapshot per frame (adapters read it live).
+            self._frame_cfg = self._config.get("playground") or {}
+            master = self._frame_cfg.get("master") or {}
+            # Global MASTER SPEED: every animation clock runs on a shared
+            # virtual clock advanced by dt×speed, so the dial stretches
+            # all animations live without jumping their phase. Timeline
+            # POSITION stays on real time — sequenced sits must remain in
+            # sync with the meditation voice.
+            try:
+                speed = max(0.05, min(4.0, float(master.get("speed", 1.0))))
+            except (TypeError, ValueError):
+                speed = 1.0
+            if self._vt_last_ms is None:
+                self._vt_ms = time_ms
+            else:
+                self._vt_ms += (time_ms - self._vt_last_ms) * speed
+            self._vt_last_ms = time_ms
+            vt = self._vt_ms
+            try:
+                master_b = max(0.0, min(1.0, float(master.get("brightness", 1.0))))
+            except (TypeError, ValueError):
+                master_b = 1.0
             # The engine hands us a FRESH `state` dict every time the
             # playground mode is (re)entered — use that to reset the
             # per-animation clocks, so intros (breathing's first inhale,
@@ -394,21 +456,20 @@ class Playground:
                     self._playing = False
                     self._position_sec = None
                     self._stop_recording_locked()
-                    # The floor HOLDS the timeline's final animation
-                    # instead of snapping back to whatever button was
-                    # pressed before play (ending a sunrise by cutting
-                    # to the disco floor was... memorable).
-                    if self._timeline:
-                        last = max(self._timeline,
-                                   key=lambda c: float(c.get("start_sec", 0))
-                                   + float(c.get("duration_sec", 0)))
-                        if last.get("animation") in self._anims:
-                            self._current = last["animation"]
+                    # The floor stays BLACK after the final clip's fade-out
+                    # — the sequence's own ending is authoritative. (We used
+                    # to hold the last clip's ANIMATION here, but that
+                    # re-triggered it from scratch: a ghost flash of e.g.
+                    # the mandala fading back in right after the track had
+                    # deliberately faded it out.)
+                    self._current = None
                 else:
-                    self._render_timeline_locked(frame, time_ms, pos)
+                    self._render_timeline_locked(frame, vt, pos)
+                    _apply_master_brightness(frame, master_b)
                     return
             # Not playing a sequence → show the current (button-triggered) anim.
-            self._render_anim_locked(self._current, frame, time_ms)
+            self._render_anim_locked(self._current, frame, vt)
+            _apply_master_brightness(frame, master_b)
 
     def _render_timeline_locked(self, frame: bytearray, time_ms: float,
                                 pos: float) -> None:
@@ -464,6 +525,8 @@ class Playground:
                 "position_sec": self._position_sec if self._playing else None,
                 "duration_sec": self._sequence_end_locked(),
                 "default_fade_sec": self._default_fade,
+                "master": {"brightness": 1.0, "speed": 1.0,
+                           **((self._config.get("playground") or {}).get("master") or {})},
                 "timeline": list(self._timeline),
                 # Per-meditation event-track model.
                 "meditations": self.meditations(),
@@ -514,11 +577,18 @@ class Playground:
             self._play_offset_sec = max(0.0, float(start_sec))
             self._play_pending = True
 
-    def stop(self) -> None:
+    def stop(self, hold_black: bool = False) -> None:
+        """Stop timeline playback. The editor's ■ Stop falls back to the
+        last-triggered animation (Nadia expects her button back); the
+        meditation hand-off passes `hold_black=True` so the floor stays
+        dark instead of flashing that animation between the sequence's
+        ending and the rest screen."""
         with self._lock:
             self._playing = False
             self._play_pending = False
             self._position_sec = None
+            if hold_black:
+                self._current = None
             self._stop_recording_locked()
 
     # ── Meditation audio (the selected meditation's clip) ───────────
@@ -552,8 +622,11 @@ class Playground:
         self._audio.play_clip(clip, start_sec)
 
     def _stop_recording_locked(self) -> None:
+        # Fade the voice out gracefully — this fires on the editor's
+        # ■ Stop AND when a timeline ends while playing with audio, and
+        # the default ~80 ms ramp cut the meditation off mid-word.
         if self._audio is not None and self._selected != _UNBOUND:
-            self._audio.stop_clip(_med_clip(self._selected))
+            self._audio.stop_clip(_med_clip(self._selected), fade=REC_FADE_S)
 
     def stop_all(self) -> None:
         self.stop()

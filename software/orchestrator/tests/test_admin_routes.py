@@ -107,8 +107,14 @@ class TestCoreEndpoints(AdminAppFixture):
         self.assertEqual(self.engine.mode, "standby")
 
     def test_sensor_simulation(self):
+        # The fixture's meditation controller is ENABLED, so "occupied"
+        # defers the visuals to it (no direct breathing switch — that
+        # flashed the circle at the start of sequenced sits); "empty"
+        # still snaps to standby.
         r = self.client.post("/api/sensor/occupied")
-        self.assertEqual(r.json()["mode"], "breathing")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["sensor"], "occupied")
+        self.assertNotEqual(r.json()["mode"], "breathing")
         r = self.client.post("/api/sensor/empty")
         self.assertEqual(r.json()["mode"], "standby")
         r = self.client.post("/api/sensor/weird")
@@ -209,7 +215,7 @@ class TestAudioRoutes(AdminAppFixture):
         r = self.client.get("/api/meditation")
         self.assertEqual(r.status_code, 200)
         ids = [i["id"] for i in r.json()["items"]]
-        self.assertEqual(ids, ["med1", "med2"])
+        self.assertEqual(ids, ["med1", "med2", "med4"])
 
     def test_put_meditation_volume_persists(self):
         r = self.client.put("/api/meditation", json={"volume": 0.4})

@@ -26,13 +26,20 @@ DEFAULTS = {
     "max_radius": 21.0,      # seeds beyond this are clipped (off-floor)
 
     # --- Motion ---
-    "rotate_deg_s": 1.5,     # whole-head rotation (slow drift)
+    "rotate_deg_s": 0.75,    # whole-head rotation (slow drift). Halved from
+                             # 1.5: at the rim a seed crossed one LED in ~2 s
+                             # — dots popped in/out visibly fast out there,
+                             # while the near-static inner seeds read fine.
     "wave_period_s": 8.0,    # one full center→rim→center brightness wave
     "wave_cycles": 2.5,      # how many wave crests live on the spiral at once
     "wave_floor": 0.18,      # dimmest a seed gets (0 = fully off between waves)
 
-    # --- Colors: golden heart → violet rim ---
-    "color_center": [255, 200, 80],
+    # --- Colors: soft lavender heart → violet rim ---
+    # (Was a golden heart, but the gold→violet blend passed through
+    # muddy pink-reds midway and its dim tail rendered as red LEDs on
+    # the hardware. All-purple keeps blue dominant at every radius —
+    # no red-leaning pixel anywhere, in the sim or on the floor.)
+    "color_center": [200, 165, 240],
     "color_rim":    [190, 70, 210],
 
     # --- Overall ---

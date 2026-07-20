@@ -42,6 +42,8 @@ import queue
 import signal
 import subprocess
 import threading
+import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -76,6 +78,10 @@ class AudioPlayer:
         self.media_dir = Path(media_dir)
         self.device = alsa_device            # None → PortAudio default
         self._mixer_override = mixer_control or None
+        # Master output gate (day/night scheduler): the callback glides
+        # the whole mix toward this target over ~2 s — never a pop.
+        self._master_target = 1.0
+        self._master_gain = 1.0
         self._mixer_control = _UNSET
         self._lock = threading.Lock()
 
@@ -101,6 +107,17 @@ class AudioPlayer:
 
         self._stream = None
         self._running = False
+
+        # Aux live input (AirPlay receiver). A bounded ring of decoded
+        # float32 (N,2) blocks; the callback drains it like a track. Gain
+        # ramps in when data flows and out when the feed starves, so
+        # stream start/stop never clicks.
+        self._aux_lock = threading.Lock()
+        self._aux_chunks: deque = deque()
+        self._aux_len = 0                 # queued sample-frames
+        self._aux_gain = 0.0
+        self._aux_volume = 1.0
+        self._aux_last_feed = 0.0         # monotonic ts of last feed_aux
 
         # Monitor: decoupled PCM→MP3 encoder fed by the mixer tap.
         self._mon_pcm_q: queue.Queue = queue.Queue(maxsize=_MON_PCM_QMAX)
@@ -169,9 +186,64 @@ class AudioPlayer:
                 tr["enabled"] = bool(enabled)
         # The callback picks up the new targets on its next block.
 
+    def set_master_enabled(self, on: bool) -> None:
+        """Day/night gate: glide the WHOLE mix to silence (or back).
+        Track states are untouched — un-muting resumes where things are."""
+        self._master_target = 1.0 if on else 0.0
+
     def set_backdrop(self, enabled: bool, volume: float | None = None) -> None:
         """Back-compat alias for the 'ocean' track."""
         self.set_track(_OCEAN, enabled=enabled, volume=volume)
+
+    # ── Aux live input (AirPlay) ────────────────────────────
+    def feed_aux(self, pcm: bytes, volume: float = 1.0) -> None:
+        """Push live S16LE interleaved stereo @ 44.1 kHz into the mix.
+        Caller guarantees whole 4-byte sample-frames. The ring is capped
+        at ~0.5 s — if the callback falls behind (or the feed runs hot),
+        the oldest audio is dropped so latency stays bounded."""
+        buf = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        if buf.size < _CHANNELS:
+            return
+        arr = buf.reshape(-1, _CHANNELS)
+        with self._aux_lock:
+            self._aux_volume = max(0.0, min(1.0, float(volume)))
+            self._aux_last_feed = time.monotonic()
+            self._aux_chunks.append(arr)
+            self._aux_len += len(arr)
+            while self._aux_len > _SR // 2 and self._aux_chunks:
+                drop = self._aux_chunks.popleft()
+                self._aux_len -= len(drop)
+
+    def aux_active(self) -> bool:
+        with self._aux_lock:
+            return time.monotonic() - self._aux_last_feed < 1.0
+
+    def _mix_aux(self, mix: np.ndarray, frames: int) -> None:
+        """Drain the aux ring into this block (callback thread). Starved
+        or absent feed → gain glides to 0; fresh data → glides to volume."""
+        with self._aux_lock:
+            fed_recently = time.monotonic() - self._aux_last_feed < 0.25
+            target = self._aux_volume if (self._aux_len > 0 or fed_recently) else 0.0
+            g0 = self._aux_gain
+            if g0 == 0.0 and target == 0.0 and self._aux_len == 0:
+                return
+            seg = np.zeros((frames, _CHANNELS), dtype=np.float32)
+            filled = 0
+            while filled < frames and self._aux_chunks:
+                c = self._aux_chunks[0]
+                take = min(len(c), frames - filled)
+                seg[filled:filled + take] = c[:take]
+                if take == len(c):
+                    self._aux_chunks.popleft()
+                else:
+                    self._aux_chunks[0] = c[take:]
+                self._aux_len -= take
+                filled += take
+            step = frames / (_RAMP_S * _SR)
+            g1 = min(target, g0 + step) if g0 < target else max(target, g0 - step)
+            self._aux_gain = g1
+        mix += seg * np.linspace(g0, g1, frames, endpoint=False,
+                                 dtype=np.float32)[:, None]
 
     # ── One-shot clips (meditation recording etc.) ──────────
     def register_clip(self, name: str, path: str | Path,
@@ -320,6 +392,7 @@ class AudioPlayer:
                 "clips":             clips,
                 "running":           self._running,
                 "monitor_listeners": listeners,
+                "aux_active":        self.aux_active(),
             }
             ocean = tracks.get(_OCEAN)
             if ocean is not None:
@@ -379,6 +452,18 @@ class AudioPlayer:
             mix += seg * gains
             tr["gain"] = g1
             tr["pos"] = new_pos
+        # Aux live input (AirPlay) — mixed like a track, before the master
+        # gate so day/night muting applies to mirrored audio too.
+        self._mix_aux(mix, frames)
+        # Master gate (day/night scheduler) — glide the whole mix, no pop.
+        mt = self._master_target
+        mg = self._master_gain
+        if mg != mt or mt < 1.0:
+            step = frames / (2.0 * _SR)
+            g1 = min(mt, mg + step) if mg < mt else max(mt, mg - step)
+            mix *= np.linspace(mg, g1, frames, endpoint=False,
+                               dtype=np.float32)[:, None]
+            self._master_gain = g1
         np.clip(mix, -1.0, 1.0, out=mix)
         outdata[:] = mix
         # Tee to the monitor encoder (drop if it's backed up — monitor is

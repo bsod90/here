@@ -32,6 +32,9 @@ apt-get install -y --no-install-recommends \
     avahi-daemon ffmpeg alsa-utils \
     libportaudio2 \
     swig python3-dev liblgpio-dev \
+    uxplay \
+    gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-tools \
     >/dev/null
 
 # ---------------------------------------------------------------------
@@ -207,8 +210,11 @@ mkdir -p "$APP" "$APP/sim" "$APP/data/sequences"
 #   * config.json — user's saved settings (mode, BPM, palettes, slider tweaks,
 #     active_sequence pointer). Never in git, must not be deleted by rsync.
 #   * data/      — saved piano-roll loops in data/sequences/*.json.
-rsync -a --delete --exclude '.venv' --exclude 'sim' --exclude 'data' \
-    --exclude 'config.json' \
+# The excludes are ANCHORED (leading /) so they only match at the app root —
+# a bare 'data' would also swallow nested dirs like animations/data/ (the
+# baked-frame assets), which is how the Eyes animation once shipped empty.
+rsync -a --delete --exclude '/.venv' --exclude '/sim' --exclude '/data' \
+    --exclude '/config.json' \
     --exclude '__pycache__' --exclude '*.pyc' \
     "$STAGE/orchestrator/" "$APP/"
 # Simulator UI lives at /opt/here/sim, mounted by the orchestrator at /sim/.

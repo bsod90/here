@@ -679,6 +679,22 @@ async function pollStatus() {
       document.getElementById('s-daily').textContent = s.power.daily_wh;
       document.getElementById('s-batt').textContent = s.power.battery_days;
     }
+    const pl = s.power_limit;
+    if (pl) {
+      const state = document.getElementById('pl-state');
+      const draw = document.getElementById('pl-draw');
+      const limiting = pl.enabled && pl.scale < 0.995;
+      if (state) {
+        state.textContent = !pl.enabled ? '— off'
+          : (limiting ? `— dimming to ${Math.round(pl.scale * 100)}%` : '— idle');
+        state.style.color = limiting ? 'var(--warn, #d9a441)' : '';
+      }
+      if (draw) {
+        const zones = (pl.zone_watts || []).join(' + ');
+        const total = zones ? `${zones} W` : `${pl.watts} W`;
+        draw.textContent = limiting ? `${total} → ${pl.watts_out} W` : total;
+      }
+    }
     updateModeButtons(s.mode);
     // Keep spin toggles in sync with the latest config (the click
     // handlers don't fire here — refreshToggle just mirrors the
@@ -922,9 +938,10 @@ async function refreshScale() {
       const lo = Math.min(...mvs);
       const anyCharging = (s.legs || []).some(l => l && l.charging);
       bpill.hidden = false;
-      bval.textContent = (lo / 1000).toFixed(2) + (anyCharging ? '⚡' : '');
+      bval.textContent = Math.round(mvToSoc(lo)) + '%'
+        + (anyCharging ? '⚡' : '');
       bpill.classList.toggle('warn', lo < 3500 && !anyCharging);  // low-battery highlight
-      bpill.title = 'lowest leg battery' +
+      bpill.title = `lowest leg battery ${(lo / 1000).toFixed(2)} V` +
         (anyCharging ? ' — charging' : (lo < 3500 ? ' — LOW' : ''));
     } else {
       bpill.hidden = true;
@@ -1296,6 +1313,98 @@ function _renderMedList(m) {
 // Rows wire their own controls on build; kept for the init call site.
 function bindAudioControls() {}
 
+// ── Day/night schedule ────────────────────────────────────────
+let _schedBound = false;
+let _schedCfg = null;
+
+// ── Power limiter (ABL) ────────────────────────────────────
+let _plBound = false;
+
+async function _putPowerLimit(patch) {
+  try {
+    await api('config', { method: 'PUT',
+      body: JSON.stringify({ transport: { power_limit: patch } }) });
+    refreshPowerLimit();
+  } catch {}
+}
+
+function bindPowerLimitControls() {
+  if (_plBound) return;
+  _plBound = true;
+  const en = document.getElementById('pl-enabled');
+  if (!en) return;
+  en.onchange = () => _putPowerLimit({ enabled: en.checked });
+  const max = document.getElementById('pl-max');
+  max.oninput = () => { document.getElementById('pl-max-val').textContent = max.value + ' W'; };
+  max.onchange = () => _putPowerLimit({ max_watts: parseFloat(max.value) });
+}
+
+async function refreshPowerLimit() {
+  let cfg;
+  try {
+    cfg = ((await api('config')).transport || {}).power_limit || {};
+  } catch { return; }
+  const en = document.getElementById('pl-enabled');
+  if (!en) return;
+  if (document.activeElement !== en) en.checked = cfg.enabled !== false;
+  const max = document.getElementById('pl-max');
+  if (document.activeElement !== max) {
+    max.value = Math.round(cfg.max_watts ?? 150);
+    document.getElementById('pl-max-val').textContent = max.value + ' W';
+  }
+}
+
+async function _putSchedule(patch) {
+  try {
+    await api('config', { method: 'PUT',
+      body: JSON.stringify({ schedule: patch }) });
+    refreshSchedule();
+  } catch {}
+}
+
+function bindScheduleControls() {
+  if (_schedBound) return;
+  _schedBound = true;
+  const en = document.getElementById('sched-enabled');
+  if (!en) return;
+  en.onchange = () => _putSchedule({ enabled: en.checked });
+  document.getElementById('sched-day-start').onchange =
+    e => { if (e.target.value) _putSchedule({ day_start: e.target.value }); };
+  document.getElementById('sched-night-start').onchange =
+    e => { if (e.target.value) _putSchedule({ night_start: e.target.value }); };
+  document.querySelectorAll('.sched-gate').forEach(b => {
+    b.onclick = () => {
+      const p = b.dataset.p, k = b.dataset.k;
+      const cur = !!(((_schedCfg || {})[p]) || {})[k];
+      _putSchedule({ [p]: { [k]: !cur } });
+    };
+  });
+}
+
+async function refreshSchedule() {
+  let cfg, st;
+  try {
+    cfg = (await api('config')).schedule || {};
+    st = (await api('status')).schedule || {};
+  } catch { return; }
+  _schedCfg = { day: { floor: true, border: true, audio: true, ...(cfg.day || {}) },
+                night: { floor: true, border: true, audio: true, ...(cfg.night || {}) } };
+  const en = document.getElementById('sched-enabled');
+  if (!en) return;
+  en.checked = !!cfg.enabled;
+  const ds = document.getElementById('sched-day-start');
+  const ns = document.getElementById('sched-night-start');
+  if (document.activeElement !== ds) ds.value = cfg.day_start || '09:00';
+  if (document.activeElement !== ns) ns.value = cfg.night_start || '20:00';
+  const period = document.getElementById('sched-period');
+  period.textContent = cfg.enabled
+    ? (st.period ? `— it is ${st.period} now` : '')
+    : '— off (everything runs)';
+  document.querySelectorAll('.sched-gate').forEach(b => {
+    b.classList.toggle('active', !!_schedCfg[b.dataset.p][b.dataset.k]);
+  });
+}
+
 // ── Floor border LED strips ───────────────────────────────────
 const _ANIM_LABELS = {
   solid: 'Solid', pulse: 'Slow pulse', gradient_orbit: 'Gradient orbit',
@@ -1332,6 +1441,8 @@ function _bindBorder() {
     e => _putBorder({ enabled: e.target.checked });
   document.getElementById('border-anim').onchange =
     e => _putBorder({ animation: e.target.value });
+  document.getElementById('border-sync').onchange =
+    e => _putBorder({ color_sync: e.target.checked });
   document.getElementById('border-color').onchange =
     e => _putBorder({ color: _hexToRgb(e.target.value) });
   document.getElementById('border-palette').onchange = e => {
@@ -1380,6 +1491,11 @@ function _updateBorder(s) {
     }
   }
   if (anim) anim.value = s.animation;
+  const sync = document.getElementById('border-sync');
+  if (sync) sync.checked = !!s.color_sync;
+  // Manual colour picking is moot while sync drives the colour.
+  const colInput = document.getElementById('border-color');
+  if (colInput) colInput.disabled = !!s.color_sync;
   _borderSeg0 = (s.segments && s.segments[0]) || null;
   // Color-order dropdown (built once).
   const ord = document.getElementById('border-order');
@@ -1444,6 +1560,93 @@ function _updateBorder(s) {
   }
 }
 function bindBorderControls() {}
+
+// ── AirPlay receiver tab ───────────────────────────────────
+let _apBound = false;
+
+async function _putAirplay(body) {
+  try {
+    const s = await api('airplay', { method: 'PUT', body: JSON.stringify(body) });
+    _updateAirplay(s);
+  } catch {}
+}
+
+function _bindAirplay() {
+  if (_apBound) return;
+  _apBound = true;
+  const card = document.getElementById('airplay-card');
+  if (!card) return;
+  document.getElementById('ap-enabled').onchange =
+    e => _putAirplay({ enabled: e.target.checked });
+  document.getElementById('ap-name-set').onclick = () => {
+    const name = document.getElementById('ap-name').value.trim();
+    if (name) _putAirplay({ name });
+  };
+  const vol = document.getElementById('ap-volume');
+  vol.oninput = () => { document.getElementById('ap-volume-val').textContent = vol.value + '%'; };
+  vol.onchange = () => _putAirplay({ volume: vol.value / 100 });
+  document.getElementById('ap-test').onclick = async () => {
+    try {
+      const s = await api('airplay/test', { method: 'POST', body: JSON.stringify({ seconds: 5 }) });
+      _updateAirplay(s);
+    } catch {}
+  };
+  document.getElementById('ap-test-audio').onclick = async () => {
+    try {
+      const s = await api('airplay/test', { method: 'POST', body: JSON.stringify({ seconds: 5, audio: true }) });
+      _updateAirplay(s);
+    } catch {}
+  };
+}
+
+async function refreshAirplay() {
+  let s;
+  try { s = await api('airplay'); } catch { return; }
+  _updateAirplay(s);
+}
+
+function _updateAirplay(s) {
+  _bindAirplay();
+  if (!s || s.error) return;
+  const en = document.getElementById('ap-enabled');
+  if (en && document.activeElement !== en) en.checked = !!s.enabled;
+  const state = document.getElementById('ap-state');
+  if (state) {
+    state.textContent = !s.installed ? 'uxplay not installed'
+      : (s.running ? 'advertising as “' + (s.name || 'HERE') + '”'
+                   : (s.enabled ? 'starting…' : 'off'));
+  }
+  const name = document.getElementById('ap-name');
+  if (name && document.activeElement !== name) name.value = s.name || '';
+  const vol = document.getElementById('ap-volume');
+  if (vol && document.activeElement !== vol) {
+    vol.value = Math.round((s.volume ?? 1) * 100);
+    document.getElementById('ap-volume-val').textContent = vol.value + '%';
+  }
+  const strm = document.getElementById('ap-streaming');
+  if (strm) {
+    strm.textContent = s.streaming ? 'LIVE' : 'idle';
+    strm.style.color = s.streaming ? 'var(--good, #7c6)' : '';
+  }
+  const fps = document.getElementById('ap-fps');
+  if (fps) fps.textContent = s.streaming ? (s.fps ?? 0) : '—';
+  const frames = document.getElementById('ap-frames');
+  if (frames) frames.textContent = s.frames ?? 0;
+  const ts = document.getElementById('ap-test-state');
+  if (ts) ts.textContent = s.test_running ? 'test running…' : '';
+  const err = document.getElementById('ap-error');
+  if (err) err.textContent = s.last_error || '';
+  const log = document.getElementById('ap-log');
+  if (log) {
+    const lines = (s.log || []);
+    const txt = lines.length ? lines.join('\n') : '—';
+    if (log.textContent !== txt) {
+      const pinned = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+      log.textContent = txt;
+      if (pinned) log.scrollTop = log.scrollHeight;
+    }
+  }
+}
 
 // Preview-phase dropdown for the breathing session. Persists to
 // breathing.session.preview_phase via PUT /api/config; the engine
@@ -1742,6 +1945,28 @@ function thRenderBattery(svg, samples, tMin, tMax) {
 // out), get a mV/hour discharge rate, and linearly extrapolate the current
 // voltage down to the cutoff. Linear on voltage — rough near the LiPo knee,
 // but it's exactly "given the last hour of discharge, when do we hit cutoff".
+// 1S Li-ion/LiPo voltage → state-of-charge (%), piecewise linear over
+// the classic discharge curve. Voltage is steep near full, nearly FLAT
+// from ~3.9 V down to ~3.6 V (where most of the capacity lives), then
+// cliffs below 3.45 V. The old estimator extrapolated a raw mV/hour
+// slope, which is wildly optimistic in the flat middle (tiny slope →
+// "weeks left") and pessimistic near full — SoC per hour is the stable
+// quantity to extrapolate.
+const _SOC_CURVE = [
+  [4200, 100], [4100, 94], [4000, 84], [3900, 74], [3800, 60],
+  [3700, 44], [3600, 26], [3500, 13], [3450, 8], [3400, 5],
+  [3300, 2], [3000, 0],
+];
+
+function mvToSoc(mv) {
+  if (mv >= _SOC_CURVE[0][0]) return 100;
+  for (let i = 1; i < _SOC_CURVE.length; i++) {
+    const [v1, s1] = _SOC_CURVE[i - 1], [v2, s2] = _SOC_CURVE[i];
+    if (mv >= v2) return s2 + (s1 - s2) * (mv - v2) / (v1 - v2);
+  }
+  return 0;
+}
+
 function thBatteryLifetime(samples, key, cutoffMv) {
   const pts = [];
   let lastTs = null;
@@ -1749,29 +1974,33 @@ function thBatteryLifetime(samples, key, cutoffMv) {
     if (s[key] != null) { pts.push([s.ts, s[key]]); lastTs = s.ts; }
   }
   if (pts.length < 2 || lastTs == null) return null;
-  const since = lastTs - 3600;                 // last hour only
+  // SoC moves slowly — use up to the last 6 h of discharge for a stable
+  // slope (gaps > 10 min excluded: reboots, charging sessions).
+  const since = lastTs - 6 * 3600;
   const recent = pts.filter(p => p[0] >= since);
   if (recent.length < 2) return null;
   const curMv = recent[recent.length - 1][1];
-  let dropMv = 0, dischargeS = 0;
+  const curSoc = mvToSoc(curMv);
+  let dropSoc = 0, dischargeS = 0;
   for (let i = 1; i < recent.length; i++) {
     const dt = recent[i][0] - recent[i - 1][0];
-    const dv = recent[i][1] - recent[i - 1][1];
-    if (dt > 0 && dt < 600 && dv < 0) { dropMv += -dv; dischargeS += dt; }
+    const dSoc = mvToSoc(recent[i][1]) - mvToSoc(recent[i - 1][1]);
+    if (dt > 0 && dt < 600 && dSoc < 0) { dropSoc += -dSoc; dischargeS += dt; }
   }
-  if (curMv <= cutoffMv) return { text: 'at cutoff', charging: false };
+  if (curMv <= cutoffMv) return { text: 'at cutoff', charging: false, soc: curSoc };
   // Charging or flat over the window → no usable discharge slope.
-  if (dischargeS < 300 || dropMv < 2) {
+  if (dischargeS < 900 || dropSoc < 0.3) {
     const net = recent[recent.length - 1][1] - recent[0][1];
-    return { text: net > 5 ? 'charging' : 'stable', charging: net > 5 };
+    return { text: net > 5 ? 'charging' : 'stable',
+             charging: net > 5, soc: curSoc };
   }
-  const ratePerH = dropMv / (dischargeS / 3600);   // mV per hour
-  const hours = (curMv - cutoffMv) / ratePerH;
+  const socPerH = dropSoc / (dischargeS / 3600);
+  const hours = (curSoc - mvToSoc(cutoffMv)) / socPerH;
   let t;
   if (hours >= 48) t = (hours / 24).toFixed(1) + ' d';
   else if (hours >= 1) t = Math.round(hours) + ' h';
   else t = '<1 h';
-  return { text: t, charging: false, hours };
+  return { text: t, charging: false, hours, soc: curSoc };
 }
 
 function thRenderXAxis(tMin, tMax) {
@@ -1873,9 +2102,10 @@ async function refreshHistory() {
     const e = thBatteryLifetime(samples, key, cutMv);
     return e ? e.text : '—';
   };
+  const vsoc = mv => mv != null
+    ? `${(mv / 1000).toFixed(2)} (${Math.round(mvToSoc(mv))}%)` : '—';
   document.getElementById('th-label-battery').textContent =
-    `Battery (V) — leg 1 ${lv1 != null ? (lv1 / 1000).toFixed(2) : '—'} / ` +
-    `leg 2 ${lv2 != null ? (lv2 / 1000).toFixed(2) : '—'} · ` +
+    `Battery (V) — leg 1 ${vsoc(lv1)} / leg 2 ${vsoc(lv2)} · ` +
     `to ${(cutMv / 1000).toFixed(2)} V cutoff: leg 1 ${est('leg1_mv')}, leg 2 ${est('leg2_mv')}`;
   thRenderXAxis(tMin, tMax);
 }
@@ -3979,6 +4209,21 @@ async function init() {
   bindBorderControls();
   refreshBorder();
   setInterval(refreshBorder, 5000);
+  refreshAirplay();
+  setInterval(() => {
+    // Fast poll while the AirPlay tab is open (live fps/log), slow keep-
+    // alive otherwise so the toggle state stays truthful everywhere.
+    if (document.getElementById('tab-airplay').classList.contains('active')) {
+      refreshAirplay();
+    }
+  }, 2000);
+  setInterval(refreshAirplay, 10000);
+  bindScheduleControls();
+  refreshSchedule();
+  setInterval(refreshSchedule, 5000);
+  bindPowerLimitControls();
+  refreshPowerLimit();
+  setInterval(refreshPowerLimit, 5000);
   // History charts — bind controls, kick off the initial fetch so the
   // graphs are already populated whichever tab the user starts on
   // (the early #tab hash-activation path runs before _thState exists,
@@ -4037,7 +4282,11 @@ init();
     let s;
     try { s = await api('playground'); } catch { return; }
     if (!s || s.error) return;
-    pg.snap = s; pg.timeline = s.timeline || [];
+    pg.snap = s;
+    // NEVER swap the timeline out from under an in-flight drag — the
+    // dragged clip object would be orphaned (the user keeps "dragging"
+    // an object no longer in the array: frozen on screen, edit lost).
+    if (!pg.drag) pg.timeline = s.timeline || [];
     // Lanes = garden animations + the WLED-ported effects, so both can be
     // placed on a meditation's track.
     pg.lanes = (s.animations || []).concat(
@@ -4057,6 +4306,18 @@ init();
     renderTriggerButtons();
     renderWled();
     renderMedSelect();
+    // Global master dials (don't fight the user's finger mid-drag).
+    const m = s.master || {};
+    const mbri = document.getElementById('pg-master-bri');
+    if (mbri && document.activeElement !== mbri) {
+      mbri.value = Math.round((m.brightness != null ? m.brightness : 1) * 100);
+      document.getElementById('pg-master-bri-val').textContent = mbri.value + '%';
+    }
+    const mspd = document.getElementById('pg-master-speed');
+    if (mspd && document.activeElement !== mspd) {
+      mspd.value = Math.round((m.speed != null ? m.speed : 1) * 100);
+      document.getElementById('pg-master-speed-val').textContent = mspd.value + '%';
+    }
     // (Re)load the waveform backdrop when the bound meditation changes.
     if (pg.selected && (prevSel !== pg.selected ||
         !pg.wave || pg.wave.id !== pg.selected)) {
@@ -4357,7 +4618,7 @@ init();
       }
       ctx.strokeStyle = '#0008'; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
       ctx.fillStyle = '#000a'; ctx.font = '9px Arial';
-      ctx.fillText(`${clip.duration_sec.toFixed(1)}s`, x + 3, y + h / 2);
+      ctx.fillText(`${(clip.duration_sec || 0).toFixed(1)}s`, x + 3, y + h / 2);
       // DAW-style fade handles: squares on the top edge — drag the left
       // one to shape the attack, the right one the release tail.
       const hy = y + 1;
@@ -4508,6 +4769,16 @@ init();
       }
       return;
     }
+    // Self-heal a lost mouseup (released outside the window, alert stole
+    // it, focus change): if no button is actually held, the drag is over.
+    // A stuck pg.drag used to leave the editor "broken until refresh" —
+    // every mouse move kept dragging a clip with no button pressed.
+    if ((e.buttons & 1) === 0) {
+      pg.drag = null;
+      saveTimeline();
+      drawTimeline();
+      return;
+    }
     const { x } = evtXY(e);
     const clip = pg.drag.clip;
     if (pg.drag.mode === 'move') {
@@ -4603,6 +4874,9 @@ init();
     pg.canvas.addEventListener('mousedown', onDown);
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
+    // Losing window focus mid-drag (tab switch, dialog) can eat the
+    // mouseup — end the drag cleanly instead of leaving it stuck.
+    window.addEventListener('blur', onUp);
     pg.canvas.addEventListener('dblclick', onDbl);
 
     // Zoom (pixels-per-second). Recenter the view on the same time after a
@@ -4621,6 +4895,18 @@ init();
     // Redraw on horizontal scroll so the sticky label column follows.
     const wrap0 = document.getElementById('pg-timeline-wrap');
     if (wrap0) wrap0.addEventListener('scroll', () => requestAnimationFrame(drawTimeline));
+
+    // Global master dials — applied over every playground animation.
+    const gbri = document.getElementById('pg-master-bri');
+    if (gbri) gbri.oninput = () => {
+      document.getElementById('pg-master-bri-val').textContent = gbri.value + '%';
+      pgSetParam('master', 'brightness', gbri.value / 100);
+    };
+    const gspd = document.getElementById('pg-master-speed');
+    if (gspd) gspd.oninput = () => {
+      document.getElementById('pg-master-speed-val').textContent = gspd.value + '%';
+      pgSetParam('master', 'speed', gspd.value / 100);
+    };
 
     // Wide mode — stretch the editor to the full window width and bump
     // the transcript type up a size. Remembered across visits.

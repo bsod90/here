@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 def register(app: FastAPI, config, engine, transport,
-             scene=None, osc_state=None) -> None:
+             scene=None, osc_state=None, scale=None, meditation=None,
+             scheduler=None) -> None:
 
     # ── Config / defaults ──────────────────────────────────────
     @app.get("/api/config")
@@ -82,26 +83,43 @@ def register(app: FastAPI, config, engine, transport,
     @app.post("/api/sensor/{state}")
     async def simulate_sensor(state: str):
         if state == "occupied":
-            engine.mode = "breathing"
-            config.set("mode", "breathing")
-            logger.info("Sensor: bench occupied → breathing")
+            # When the meditation controller is enabled, IT picks the
+            # occupied visuals (sequenced track or breathing fallback) off
+            # the forced occupancy below — setting breathing here first
+            # flashed the circle at the start of every sequenced sit.
+            if meditation is not None and meditation.enabled():
+                logger.info("Sensor: bench occupied (meditation drives visuals)")
+            else:
+                engine.mode = "breathing"
+                config.set("mode", "breathing")
+                logger.info("Sensor: bench occupied → breathing")
         elif state == "empty":
             engine.mode = "standby"
             config.set("mode", "standby")
             logger.info("Sensor: bench empty → standby")
         else:
             return JSONResponse({"error": "invalid state"}, status_code=400)
+        # Also force the scale's debounced occupancy, so everything keyed
+        # to PHYSICAL occupancy (the meditation play-once flow and its
+        # sequenced playground visuals) runs exactly like a real sit.
+        if scale is not None:
+            scale.simulate_occupancy(state == "occupied")
         return {"sensor": state, "mode": engine.mode}
 
     # ── Status ─────────────────────────────────────────────────
     @app.get("/api/status")
     async def get_status():
-        return {
+        out = {
             "mode": engine.mode,
             "fps": engine.actual_fps,
             "uptime_s": engine.uptime_seconds,
             "power": engine.power_estimate,
         }
+        if scheduler is not None:
+            out["schedule"] = scheduler.state()
+        if hasattr(transport, "limiter_state"):
+            out["power_limit"] = transport.limiter_state()
+        return out
 
     # ── Targets (WLED endpoints) ───────────────────────────────
     @app.get("/api/targets")

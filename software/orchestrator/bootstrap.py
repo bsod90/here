@@ -18,6 +18,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from airplay import AirPlayReceiver
 from animation_engine import AnimationEngine
 from audio import AudioPlayer
 from bench_link import BenchLink, HAS_SERIAL as bench_serial_available
@@ -26,6 +27,7 @@ from ota import OtaService
 from osc_input import OscState, OscServer
 from playground import Playground
 from border import BorderController
+from daynight import DayNightScheduler
 from scale import ScaleSensor, ScaleConfig
 from scene import Scene, SequenceStore, PatchStore
 from scene.animations import REGISTRY as SCENE_ANIMATION_REGISTRY
@@ -64,6 +66,8 @@ class Services:
     meditation: MeditationController
     playground: Playground
     border: BorderController
+    scheduler: DayNightScheduler
+    airplay: AirPlayReceiver
 
     def start(self) -> None:
         """Start the background workers (idempotence is each service's
@@ -76,9 +80,13 @@ class Services:
         self.scale.start()
         self.meditation.start()
         self.border.start()
+        self.scheduler.start()
         self.telemetry_history.start()
+        self.airplay.start()
 
     def stop(self) -> None:
+        self.airplay.stop()
+        self.scheduler.stop()
         self.audio.stop()
         self.meditation.stop()
         self.border.stop()
@@ -102,7 +110,8 @@ class Services:
                           telemetry_history=self.telemetry_history,
                           audio=self.audio, playground=self.playground,
                           ota=self.ota, bench_link=self.bench_link,
-                          meditation=self.meditation, border=self.border)
+                          meditation=self.meditation, border=self.border,
+                          scheduler=self.scheduler, airplay=self.airplay)
 
 
 def build_services(config) -> Services:
@@ -129,9 +138,23 @@ def build_services(config) -> Services:
 
     # Bench occupancy sensor (dual HX711). The scale's state machine
     # drives engine.mode between occupied/idle when auto_engage is on.
-    # NOTE: the closures capture `engine`, which is constructed a few
-    # lines below — they only run once the scale thread is started.
+    # NOTE: the closures capture `engine` and `_svc["meditation"]`, which
+    # are constructed further down — they only run once the scale thread
+    # is started.
+    _svc: dict = {"meditation": None}
+
     def _scale_switch(mode: str, reason: str) -> None:
+        # When the meditation controller is active, IT owns the occupied
+        # visuals (sequenced playground track, or breathing as fallback) —
+        # it reacts to the same occupancy within one ~0.3 s tick. If the
+        # scale also slammed `occupied_mode` here first, the breathing
+        # circle flashed briefly at the start of every sequenced sit (the
+        # mode-crossfade re-render made the 0.3 s race a BRIGHT flash).
+        med = _svc["meditation"]
+        if (med is not None and mode == scale.cfg.occupied_mode
+                and med.enabled()):
+            logger.info(f"{reason} → visuals deferred to meditation controller")
+            return
         engine.mode = mode
         config.set("mode", mode)
         logger.info(f"{reason} → mode={mode}")
@@ -203,6 +226,7 @@ def build_services(config) -> Services:
         media_dir=audio_cfg.get("media_dir", "/opt/here/media"),
         occupancy_getter=lambda: scale.occupied,
         release_setter=scale.set_release_override)
+    _svc["meditation"] = meditation      # see _scale_switch above
     _couple_mode_audio(config, engine, audio)
 
     # Nadia's Playground — isolated experimentation mode (see
@@ -210,8 +234,18 @@ def build_services(config) -> Services:
     playground = Playground(config, audio=audio)
     engine.playground = playground
 
-    # Floor-border LED strips (WS2812 over SPI). Independent of the matrix.
-    border = BorderController(config)
+    # Floor-border LED strips (WS2812 over SPI). Independent of the matrix,
+    # but reads the engine's latest frame for color_sync (dominant colour).
+    border = BorderController(config,
+                              frame_source=lambda: bytes(engine.frame))
+
+    # Day/night schedule: gates floor / border / audio per period.
+    scheduler = DayNightScheduler(config, engine=engine, border=border,
+                                  audio=audio)
+
+    # AirPlay receiver — phone mirror onto the floor + speaker mix.
+    airplay = AirPlayReceiver(config, engine=engine, audio=audio)
+    engine.airplay = airplay
 
     return Services(
         config=config, transport=transport, sim_bus=sim_bus,
@@ -221,7 +255,7 @@ def build_services(config) -> Services:
         telemetry_history=telemetry_history, bench_link=bench_link,
         ota=ota, scale=scale, engine=engine,
         audio=audio, meditation=meditation, playground=playground,
-        border=border,
+        border=border, scheduler=scheduler, airplay=airplay,
     )
 
 

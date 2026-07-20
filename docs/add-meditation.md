@@ -19,11 +19,12 @@ with zero context — follow it literally.
    ```
 
 3. **GOTCHA — the Pi won't see a DEFAULT_CONFIG list change.**
-   `ConfigManager._save()` bakes the FULL merged config into
-   `/opt/here/config.json` on every set, and `_deep_merge` replaces
-   lists wholesale — so the saved `items` list shadows the new default.
-   After deploying, either add the item to the live list via the API,
-   or edit the saved file with the service stopped:
+   Config saves diffs since 2026-07 (untouched settings track shipped
+   defaults), but lists merge WHOLESALE — and toggling any meditation in
+   the UI persists the whole `items` list as an override. Once that has
+   happened (it has), a new default item never shows up on the Pi. Add
+   the item to the live list by editing the saved file with the service
+   stopped (there is no append API):
 
    ```bash
    ssh here@here.local
@@ -42,10 +43,10 @@ with zero context — follow it literally.
    sudo systemctl start here-orchestrator
    ```
 
-   (The same shadowing applies to ANY DEFAULT_CONFIG change: the Pi's
-   config.json has old values baked in. If a new default "doesn't take"
-   on the Pi, delete the stale key from `/opt/here/config.json` with the
-   service stopped.)
+   (Scalar defaults now propagate fine thanks to diff-saving; the trap
+   is specifically LISTS the UI has ever written — `items`, `targets`,
+   palettes. If a new default "doesn't take" on the Pi, look for that
+   key in `/opt/here/config.json` and fix it with the service stopped.)
 
 ## 2. Transcribe it (whisper.cpp on the Mac)
 

@@ -8,9 +8,13 @@ independently. When at least one is on:
   someone sits          → pick a meditation (random; never the same one twice
                           in a row when more than one is enabled), crossfade
                           the ocean out and that recording in (5 s); the
-                          breathing circle runs; it plays once
+                          VISUALS are that meditation's sequenced event-track
+                          from the playground editor when one exists (played
+                          live from the shared track — edits in the tab apply
+                          immediately), else the classic breathing circle;
+                          it plays once
   the clip finishes     → a short pause, then crossfade back to ocean and the
-                          calm rain rest screen (it does NOT replay while the
+                          calm underwater rest screen (it does NOT replay while the
                           sitter stays)
   the sitter leaves     → re-arm: the next sit picks again from the top
 
@@ -34,14 +38,19 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 OCEAN = "ocean"              # track that plays at idle / standby
-OCCUPIED_MODE = "breathing"  # engine mode while the recording plays
-RIPPLES_MODE = "ripples"     # calm rain-pond rest screen after it finishes
+OCCUPIED_MODE = "breathing"  # engine mode while the recording plays (fallback)
+PLAYGROUND_MODE = "playground"  # engine mode when a sequenced track exists
+RIPPLES_MODE = "ripples"     # calm underwater rest screen after it finishes
 IDLE_MODE = "standby"        # bench empty
 FADE_S = 5.0                 # crossfade for the meditation clip / ocean-out
 OCEAN_FADE_S = 12.0          # slower fade-IN for the ocean (gentler return)
-PAUSE_S = 5.0                # silent hold after the recording ends, before rain
+PAUSE_S = 5.0                # silent hold after the recording ends, before rest
 TICK_S = 0.3                 # occupancy poll period
 RELEASE_PLAYING_S = 60.0     # forgiving release dwell while a recording plays
+VISUAL_FADE_S = 3.5          # keep the playground track rendering this long
+                             # after a mode switch away from it, so the
+                             # engine's crossfade has LIVE content to fade
+                             # out (stopping it instantly = snap to black)
 
 
 def _clip(mid: str) -> str:
@@ -69,6 +78,8 @@ class MeditationController:
         self._rest_started = False  # rain rest screen + ocean have come back
         self._current = None        # clip name of the meditation now playing
         self._last_id = None        # last meditation id picked (no-repeat)
+        self._pg_visuals = False    # visuals driven by a playground track
+        self._stop_visuals_at = 0.0  # deferred pg.stop deadline (0 = none)
         self._running = False
         self._thread = None
         self.reload()
@@ -195,6 +206,10 @@ class MeditationController:
         the watcher thread."""
         if self._audio is None:
             return
+        # A deferred visuals stop (rest hand-off / vacate) comes due once
+        # the engine's crossfade away from the playground has finished.
+        if self._stop_visuals_at and self._clock() >= self._stop_visuals_at:
+            self._stop_pg_visuals()
         occ = bool(self._occupancy())
         if not self.enabled():
             self._prev_occ = occ
@@ -228,18 +243,36 @@ class MeditationController:
             self._finished = False
             self._rest_started = False
             self._current = _clip(choice["id"])
-        self._engine.mode = OCCUPIED_MODE          # breathing circle
+        # Visuals: when this meditation has a sequenced event-track built in
+        # the playground editor, play THAT — straight from the playground's
+        # live track object, so edits in the tab apply to the very next sit
+        # (or even mid-play). No track yet → the classic breathing circle.
+        pg = getattr(self._engine, "playground", None)
+        if pg is not None and pg.has_track(choice["id"]):
+            self._stop_visuals_at = 0.0            # cancel any pending stop
+            pg.select(choice["id"])
+            self._engine.mode = PLAYGROUND_MODE
+            pg.play(with_recording=False)          # audio stays OURS below
+            self._pg_visuals = True
+        else:
+            self._engine.mode = OCCUPIED_MODE      # breathing circle
+            self._pg_visuals = False
         # Be forgiving while the recording plays: a shift in the seat shouldn't
         # cut the meditation short.
         self._set_release(RELEASE_PLAYING_S)
         self._audio.set_track(OCEAN, enabled=False, fade=FADE_S)
         self._audio.set_track(self._current, volume=self._volume())
         self._audio.play_clip(self._current, 0.0, fade=FADE_S)
-        logger.info("meditation: occupied → %s (ocean fading out)", choice["id"])
+        logger.info("meditation: occupied → %s (visuals=%s, ocean fading out)",
+                    choice["id"],
+                    "playground track" if self._pg_visuals else "breathing")
 
     def _on_vacated(self) -> None:
         if self._current is not None:
             self._audio.stop_clip(self._current, fade=FADE_S)
+        # Deferred: the playground keeps rendering inside the crossfade
+        # to standby, easing the timeline out instead of snapping black.
+        self._stop_pg_visuals(defer_s=VISUAL_FADE_S)
         self._audio.set_track(OCEAN, enabled=True, fade=OCEAN_FADE_S)  # slow in
         self._engine.mode = IDLE_MODE
         self._config.set("mode", IDLE_MODE)
@@ -248,6 +281,27 @@ class MeditationController:
             self._played = self._finished = self._rest_started = False
             self._current = None
         logger.info("meditation: vacated → ocean ON, re-armed")
+
+    def _stop_pg_visuals(self, defer_s: float = 0.0) -> None:
+        """End a playground-track playback we started (visuals only).
+
+        With `defer_s` the actual stop happens that many seconds later
+        (via tick) — the mode has already switched away, so the timeline
+        keeps rendering ONLY inside the engine's crossfade, easing out
+        instead of snapping to black."""
+        if not self._pg_visuals:
+            return
+        if defer_s > 0.0:
+            self._stop_visuals_at = self._clock() + defer_s
+            return
+        self._pg_visuals = False
+        self._stop_visuals_at = 0.0
+        pg = getattr(self._engine, "playground", None)
+        if pg is not None:
+            try:
+                pg.stop(hold_black=True)   # no ghost animation after the end
+            except Exception:
+                logger.exception("meditation: playground stop failed")
 
     def _check_finished(self) -> None:
         if self._current is None:
@@ -269,13 +323,14 @@ class MeditationController:
             return                                  # still in the silent pause
         with self._lock:
             self._rest_started = True
+        self._stop_pg_visuals(defer_s=VISUAL_FADE_S)  # ease out, don't snap
         self._audio.set_track(OCEAN, enabled=True, fade=OCEAN_FADE_S)
         self._engine.mode = RIPPLES_MODE
         # Persist standby (not ripples) so a restart with an empty bench comes
-        # up calm, not raining.
+        # up calm, not mid-rest.
         self._config.set("mode", IDLE_MODE)
         self._set_release(None)                     # snappy again (saved base)
-        logger.info("meditation: pause over → rain ripples + ocean (slow fade)")
+        logger.info("meditation: pause over → underwater rest + ocean (slow fade)")
 
     # ── Snapshot (for the admin UI) ─────────────────────────
     def state(self) -> dict:

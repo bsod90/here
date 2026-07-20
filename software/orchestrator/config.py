@@ -83,6 +83,21 @@ DEFAULT_CONFIG = {
         # ABL). The simulator frame is left raw, so it stays the reference.
         # 1.0 disables. WLED's LED default is 2.8; 2.2 is a gentler curve.
         "gamma": 2.2,
+        # Auto power limiter (ABL) on the outgoing DDP bytes. The matrix
+        # is two electrically independent panels (2 WLED pins, half the
+        # frame each), and each panel's wiring browns out on ITS OWN
+        # draw — so the budget is enforced per panel at max_watts/2: a
+        # bright scene concentrated on one panel glitches into random
+        # colors even when the total looks safe. Frames are scaled
+        # uniformly by the worst panel's overshoot. Full white is ~194 W
+        # total; tune max_watts down live until bright scenes stop
+        # glitching (the Run tab shows per-panel draw).
+        "power_limit": {
+            "enabled": True,
+            "max_watts": 150.0,
+            "zones": 2,          # independent power feeds (WLED pins)
+            "release_s": 0.7,    # glide back to full brightness over this
+        },
     },
 
     "breathing": {
@@ -249,6 +264,8 @@ DEFAULT_CONFIG = {
                  "file": "meditation1.wav", "enabled": True, "sequence": None},
                 {"id": "med2", "label": "Meditation 2 [Will]",
                  "file": "meditation2.wav", "enabled": False, "sequence": None},
+                {"id": "med4", "label": "Meditation 4 [Katya]",
+                 "file": "meditation4.wav", "enabled": True, "sequence": None},
             ],
         },
         # ALSA simple-mixer control, pinned to 100% so it doesn't attenuate
@@ -267,12 +284,23 @@ DEFAULT_CONFIG = {
         # (audio.meditation.items[].id). Each track is a seconds-timeline of
         # clips: [{animation, start_sec, duration_sec, fade_in_sec?,
         # fade_out_sec?}]. The editor binds to one meditation at a time.
-        "tracks":          {},
+        # med4 ships a placeholder (breathing circle wall-to-wall,
+        # 252.8 s = the recording's length) until it gets a real score.
+        "tracks": {
+            "med4": [{"animation": "breathing", "start_sec": 0.0,
+                      "duration_sec": 252.8, "fade_in_sec": 2.0,
+                      "fade_out_sec": 3.0}],
+        },
         # Which meditation the editor is currently bound to.
         "selected":        None,
         # clip ease used when a clip doesn't set its own fades; butted
         # clips crossfade over this long (see playground.py docstring)
         "default_fade_sec": 1.5,
+        # Global dials applied over EVERY playground animation (including
+        # sequenced meditation sits): brightness scales the finished
+        # frame; speed stretches all animation clocks (timeline positions
+        # stay in real time so tracks keep sync with the voice).
+        "master": {"brightness": 1.0, "speed": 1.0},
     },
 
     # Bench link — telemetry from the two ESP-NOW leg nodes, received as
@@ -316,6 +344,10 @@ DEFAULT_CONFIG = {
         "brightness": 0.25,
         "speed":      0.5,                 # 0..1; 50% = calibrated rate, ±=half/double
         "color":      [80, 120, 255],      # single-colour anims (solid/pulse/wave)
+        # Follow the floor: the colour-driven animations take the dominant
+        # colour of whatever the matrix is showing (eased over ~3 s) instead
+        # of the fixed `color` above. Toggle off to pick colours manually.
+        "color_sync": True,
         "palette":    [[80, 120, 255], [40, 90, 205],
                        [95, 70, 205], [55, 175, 200]],   # multi-colour anims
         "animation":  "pulse",
@@ -325,16 +357,43 @@ DEFAULT_CONFIG = {
         ],
     },
 
-    # Post-meditation "rest" screen (the `ripples` engine mode). SPEED comes
-    # from the rain animation's DEFAULTS — deliberately NOT overridden here,
-    # so the rest screen and the playground's "Water droplets" always stay in
-    # sync. Only the entrance differs: after the recording ends the breathing
-    # circle fades out (7.5 s), `start_delay_s` keeps the floor fully dark for
-    # a beat of after-meditation stillness, and only then does the rain fade
-    # in on its own slow `fade_in_s` (the engine crossfade is long over by then).
+    # Day/night schedule (see daynight.py). When enabled, the scheduler
+    # applies runtime gates per period — floor (matrix), border strip,
+    # audio — without touching any underlying setting. Times are the
+    # Pi's LOCAL clock, "HH:MM"; day = [day_start, night_start).
+    "schedule": {
+        "enabled": False,
+        "day_start": "09:00",
+        "night_start": "20:00",
+        "day":   {"floor": True, "border": True, "audio": True},
+        "night": {"floor": True, "border": True, "audio": True},
+    },
+
+    # AirPlay receiver (uxplay). When enabled the platform advertises
+    # itself as an AirPlay target; mirrored video is center-cropped to a
+    # square, scaled to the matrix, and streamed to the floor while the
+    # audio joins the speaker mix. See airplay.py.
+    "airplay": {
+        "enabled": False,
+        "name": "HERE",              # advertised receiver name
+        "data_dir": "/opt/here/data",  # FIFOs + GStreamer registry cache
+        "idle_timeout_s": 3.0,       # no frames for this long → hand mode back
+        "volume": 1.0,               # mirrored-audio level in the mix
+        "video_decoder": "",         # uxplay -vd override (e.g. v4l2h264dec)
+        # Orientation fix: the floor is watched from the bench, so the
+        # mirror is flipped vertically. Any videoflip method, or "none".
+        "video_flip": "vertical-flip",
+    },
+
+    # Post-meditation "rest" screen (the `ripples` engine mode — historical
+    # name, baked into saved configs). Renders the playground's UNDERWATER
+    # animation with its live config.playground.waves tuning, so the rest
+    # screen and the tab always stay in sync. This section only shapes the
+    # ENTRANCE: `start_delay_s` of pure black after the sequence's ending,
+    # then a slow `fade_in_s` rise into the water.
     "ripples": {
-        "start_delay_s": 15.0, # breathing fade-out (7.5 s) + ~7.5 s of pure dark
-        "fade_in_s": 10.0,     # then the rain fades in very gently
+        "start_delay_s": 8.0,  # dark beat of after-meditation stillness
+        "fade_in_s": 10.0,     # then the underwater light fades in gently
     },
 
     # Bench scale. Raw weight now comes from the ESP-NOW legs via
@@ -485,6 +544,24 @@ class ConfigManager:
             else:
                 base[key] = value
 
+    @staticmethod
+    def _diff(base: dict, full: dict) -> dict:
+        """The subset of `full` that DIFFERS from `base` (recursive on
+        dicts; lists and scalars compare atomically; keys unknown to the
+        defaults are kept wholesale). This is what gets persisted — see
+        _save for why."""
+        out = {}
+        for key, value in full.items():
+            if key not in base:
+                out[key] = value
+            elif isinstance(base[key], dict) and isinstance(value, dict):
+                sub = ConfigManager._diff(base[key], value)
+                if sub:
+                    out[key] = sub
+            elif value != base[key]:
+                out[key] = value
+        return out
+
     def get(self, key: str):
         with self._lock:
             return copy.deepcopy(self._config.get(key))
@@ -496,12 +573,20 @@ class ConfigManager:
     def set(self, key: str, value):
         # Merge in memory + serialize under `_lock` (fast, ~ms), then do
         # the slow disk write under `_save_lock` only — see __init__.
+        #
+        # Only the DIFF from DEFAULT_CONFIG is persisted. Saving the full
+        # merged config (the old behaviour) baked every default into the
+        # file forever, so later DEFAULT_CONFIG changes were silently
+        # shadowed on the Pi — a recurring foot-gun (stale ripples speeds,
+        # stale meditation lists, …). With the diff, untouched settings
+        # track the shipped defaults; only values someone actually changed
+        # stick.
         with self._lock:
             if isinstance(value, dict) and key in self._config and isinstance(self._config[key], dict):
                 self._deep_merge(self._config[key], value)
             else:
                 self._config[key] = value
-            data = json.dumps(self._config, indent=2)
+            data = json.dumps(self._diff(DEFAULT_CONFIG, self._config), indent=2)
         self._save(data)
 
     def _save(self, data: str):

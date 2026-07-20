@@ -15,6 +15,7 @@ def _state(config, border) -> dict:
     return {
         "enabled":    bool(cfg.get("enabled")),
         "animation":  cfg.get("animation", "pulse"),
+        "color_sync": bool(cfg.get("color_sync", True)),
         "color":      cfg.get("color", [80, 120, 255]),
         "palette":    cfg.get("palette", []),
         "brightness": float(cfg.get("brightness", 0.25)),
@@ -42,6 +43,8 @@ def register(app: FastAPI, border, config) -> None:
 
         if "enabled" in body:
             patch["enabled"] = bool(body["enabled"])
+        if "color_sync" in body:
+            patch["color_sync"] = bool(body["color_sync"])
         if "animation" in body:
             anims = border.status().get("animations", [])
             if body["animation"] not in anims:

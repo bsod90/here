@@ -57,6 +57,10 @@ DEFAULTS = {
 
     "core_size": 2.0,        # radius of the glowing center
     "core_brightness": 0.9,  # how bright the center glows
+    "core_hue_shift": -0.14, # the center's OWN hue, offset from the body's
+                             # palette walk — a slightly different middle
+                             # color that melts into the radial gradient
+                             # (like the other mandalas read)
 
     "fade_in_s": 2.0,        # gentle fade from black when the animation starts
     "brightness": 1.0,       # master brightness multiplier
@@ -151,16 +155,24 @@ def render(frame: bytearray, time_ms: float, params: dict, state: dict | None = 
     cut = min(0.9, max(0.0, float(p["edge_cutoff"])))
     field = np.clip((field - cut) / (1.0 - cut), 0.0, 1.0)
     field = np.maximum(field, np.where(inside, pearls, 0.0))
-    field = np.maximum(field, core)
 
     # ── Color: hue flows with radius, palette slowly cycles ─────────
     hue0 = t * float(p["color_speed"]) / 150.0
     hue = hue0 + float(p["hue_spread"]) * rn
     sat = min(1.0, max(0.0, float(p["saturation"])))
     color = _sinebow(hue, sat)
+    body = field[:, np.newaxis] * color
+
+    # The glowing center wears its OWN hue (core_hue_shift away from the
+    # body's walk), alpha-composited over the body so the middle reads
+    # as a distinct color that blends into the radial gradient.
+    core_color = _sinebow(
+        np.full_like(rn, hue0 + float(p["core_hue_shift"])), sat)
+    a = np.clip(core, 0.0, 1.0)[:, np.newaxis]
+    rgb = body * (1.0 - a) + core_color * a
 
     # Gentle fade from black at the start.
     fade = min(1.0, t / max(0.01, float(p["fade_in_s"])))
 
-    rgb = field[:, np.newaxis] * color * (float(p["brightness"]) * fade)
+    rgb = rgb * (float(p["brightness"]) * fade)
     frame[:] = np.clip(rgb, 0, 255).astype(np.uint8).tobytes()

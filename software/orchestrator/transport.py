@@ -20,9 +20,15 @@ import time
 import logging
 import urllib.request
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 HEALTH_CHECK_INTERVAL = 5
+
+# WS2811 full-white draw per LED — keep in sync with animation_engine's
+# WATTS_PER_LED_FULL_WHITE (duplicated to avoid importing the engine here).
+WATTS_PER_LED_FULL_WHITE = 0.1
 
 # DDP constants
 DDP_PORT = 4048
@@ -43,10 +49,20 @@ class UDPTransport:
         self._lock = threading.Lock()
         self._targets = []
         self._seq = 0  # DDP sequence counter
-        # Cached gamma LUT: (exponent, 256-byte translation table). Rebuilt
-        # lazily whenever the configured exponent changes.
+        # Cached gamma LUT: 256 FLOAT levels for the configured exponent,
+        # rebuilt lazily when it changes — plus fixed per-pixel dither
+        # offsets for the final 8-bit rounding (see _apply_gamma).
         self._gamma_exp = None
         self._gamma_lut = None
+        self._dither_noise = None
+        # Power limiter (ABL): current dim scale + last-frame stats for
+        # the admin panel. Attack is instant, release glides — see
+        # _limiter_scale.
+        self._limit_scale = 1.0
+        self._limit_t = 0.0
+        self._limit_state = {"enabled": False, "max_watts": 0.0,
+                             "watts": 0.0, "zone_watts": [0.0, 0.0],
+                             "watts_out": 0.0, "scale": 1.0}
         self.update_targets(targets)
 
         self._running = True
@@ -81,29 +97,124 @@ class UDPTransport:
             return
 
         tcfg = self._config.get("transport") or {}
-        frame = self._apply_gamma(frame, tcfg.get("gamma", 1.0))
+        frame = self._shape_output(frame, tcfg)
         delay = tcfg.get("inter_packet_ms", 0) / 1000.0
         self._send_ddp(frame, enabled, delay)
 
-    def _apply_gamma(self, frame: bytearray, exp):
-        """Gamma-correct the outgoing DDP bytes (hardware path only).
-
-        WLED's realtime gamma is off, so we shape the curve here. A 256-byte
-        translation table makes this a single C-level `bytes.translate` over
-        the whole frame — negligible per-frame cost. exp<=1 is a no-op.
-        """
+    def _shape_output(self, frame: bytearray, tcfg: dict):
+        """Gamma + power limiter on the outgoing DDP bytes (hardware path
+        only — the simulator frame stays raw). Both run in FLOAT with a
+        single dither/quantize pass at the end."""
         try:
-            exp = float(exp)
+            exp = float(tcfg.get("gamma", 1.0))
         except (TypeError, ValueError):
+            exp = 1.0
+        lin = None
+        if exp > 1.001:
+            if exp != self._gamma_exp:
+                self._gamma_lut = np.array(
+                    [(i / 255.0) ** exp * 255.0 for i in range(256)],
+                    dtype=np.float32)
+                self._gamma_exp = exp
+            lin = self._gamma_lut[np.frombuffer(frame, dtype=np.uint8)]
+
+        # Power limiter — measured on the POST-gamma values, since those
+        # are the duty cycles the LEDs actually draw current at.
+        vals = (lin if lin is not None
+                else np.frombuffer(frame, dtype=np.uint8))
+        scale = self._limiter_scale(vals, tcfg.get("power_limit") or {})
+        if scale < 0.9995:
+            if lin is None:
+                lin = np.frombuffer(frame, dtype=np.uint8).astype(np.float32)
+            lin = lin * scale
+
+        if lin is None:
             return frame
-        if exp <= 1.001:
-            return frame
-        if exp != self._gamma_exp:
-            self._gamma_lut = bytes(
-                round((i / 255.0) ** exp * 255.0) for i in range(256)
-            )
-            self._gamma_exp = exp
-        return frame.translate(self._gamma_lut)
+        return self._quantize(lin)
+
+    def _limiter_scale(self, vals, pl: dict) -> float:
+        """ABL-style auto power limiter. The matrix is fed as two
+        electrically independent panels (2 WLED pins, first/second half
+        of the frame), so the budget is enforced PER PANEL at half the
+        total each: a bright scene concentrated on one panel pulls its
+        whole draw through that panel's wiring and browns it out (random-
+        color glitching) even when the total looks safe. The frame is
+        scaled uniformly by the worst panel's overshoot, so the image
+        only dims — it never changes balance. Attack is instant (protect
+        the supply NOW); release glides back up over `release_s` so the
+        limiter itself never pumps or flickers."""
+        zones = max(1, int(pl.get("zones", 2)))
+        zone_watts = [float(z.sum()) / (255.0 * 3.0) * WATTS_PER_LED_FULL_WHITE
+                      for z in np.array_split(np.asarray(vals, dtype=np.float32),
+                                              zones)]
+        watts = sum(zone_watts)
+        worst = max(zone_watts)
+        enabled = bool(pl.get("enabled", False))
+        try:
+            max_w = float(pl.get("max_watts", 150.0))
+        except (TypeError, ValueError):
+            max_w = 150.0
+        max_w = max(1.0, max_w)
+        zone_budget = max_w / zones
+        now = time.monotonic()
+        dt = max(0.0, min(0.2, now - self._limit_t))
+        self._limit_t = now
+        if not enabled or worst <= 0.0:
+            self._limit_scale = 1.0
+        else:
+            needed = min(1.0, zone_budget / worst)
+            if needed < self._limit_scale:
+                self._limit_scale = needed
+            else:
+                try:
+                    release_s = max(0.05, float(pl.get("release_s", 0.7)))
+                except (TypeError, ValueError):
+                    release_s = 0.7
+                self._limit_scale = min(needed,
+                                        self._limit_scale + dt / release_s)
+        scale = self._limit_scale
+        self._limit_state = {
+            "enabled":    enabled,
+            "max_watts":  round(max_w, 1),
+            "watts":      round(watts, 1),
+            "zone_watts": [round(w, 1) for w in zone_watts],
+            "watts_out":  round(watts * scale, 1),
+            "scale":      round(scale, 3),
+        }
+        return scale
+
+    def limiter_state(self) -> dict:
+        """Last-frame limiter snapshot for the admin panel."""
+        return dict(self._limit_state)
+
+    def _quantize(self, lin):
+        """Float → DDP bytes with a fixed per-pixel spatial dither.
+
+        The old integer translation table collapsed the dark range into a
+        handful of output levels, so slow fades (playground crossfades,
+        mode transitions) stepped visibly: every pixel of the same value
+        jumped a level at the same instant, frame-wide. Giving each pixel
+        its own constant quantization threshold spreads the jumps through
+        the fade (a fine spatial ripple instead of a step), while static
+        content stays byte-identical frame to frame — the offsets never
+        change over time, so nothing flickers."""
+        noise = self._dither_noise
+        if noise is None or noise.shape != lin.shape:
+            # ONE offset per PIXEL, shared by its three channels — so the
+            # rounding can't shift hue. Per-subpixel offsets turned dim
+            # warm tones into lone pure-red LEDs (r rounded up where g/b
+            # rounded down, permanently, since the offsets are fixed).
+            px = np.random.default_rng(1234).random(
+                (lin.shape[0] + 2) // 3).astype(np.float32)
+            noise = np.repeat(px, 3)[: lin.shape[0]]
+            self._dither_noise = noise
+        out = np.clip(np.floor(lin + noise), 0, 255)
+        return bytearray(out.astype(np.uint8).tobytes())
+
+    def _apply_gamma(self, frame: bytearray, exp):
+        """Gamma-only path (no limiter) — kept for tests and the on-Pi
+        verification scripts that compare raw vs corrected bytes."""
+        return self._shape_output(frame, {"gamma": exp})
 
     def _send_ddp(self, frame: bytearray, targets, delay):
         total_bytes = len(frame)

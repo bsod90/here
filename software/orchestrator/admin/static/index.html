@@ -30,6 +30,7 @@
     <button class="tab" data-tab="wled">WLED</button>
     <button class="tab" data-tab="telemetry">Telemetry</button>
     <button class="tab" data-tab="playground">Playground</button>
+    <button class="tab" data-tab="airplay">AirPlay</button>
     <button class="tab" data-tab="logs">Logs</button>
   </nav>
 
@@ -180,6 +181,10 @@
           <select id="border-anim" class="tiny-sel"></select>
         </div>
         <div class="row-line">
+          <label class="dim" title="Solid / pulse / wave follow the dominant color of whatever the floor is showing (eased, never abrupt)">Sync color to floor</label>
+          <label class="switch"><input type="checkbox" id="border-sync"><span class="slider"></span></label>
+        </div>
+        <div class="row-line">
           <label class="dim" title="Used by solid / pulse / wave">Color</label>
           <input type="color" id="border-color" style="width:46px;height:26px;padding:0;border:1px solid var(--line-2);background:none;">
           <label class="dim" title="Used by gradient / comet / aurora / twinkle">Palette</label>
@@ -213,6 +218,35 @@
         </div>
       </div>
 
+      <h2>Day / Night</h2>
+      <div class="param-group" id="sched-card">
+        <div class="switch-row">
+          <label class="dim sw-label" title="Gate the floor, border strip and audio per period. Underlying settings are untouched — turning the schedule off restores everything.">Schedule
+            <span class="dim tiny" id="sched-period">—</span></label>
+          <label class="switch"><input type="checkbox" id="sched-enabled"><span class="slider"></span></label>
+        </div>
+        <div class="row-line">
+          <label class="dim">Day starts</label>
+          <input type="time" id="sched-day-start" class="tiny-num" style="width:auto;">
+          <label class="dim">Night starts</label>
+          <input type="time" id="sched-night-start" class="tiny-num" style="width:auto;">
+        </div>
+        <div class="row-line">
+          <label class="dim" style="min-width:44px;">Day</label>
+          <button class="mode-btn sched-gate" data-p="day" data-k="floor">Floor</button>
+          <button class="mode-btn sched-gate" data-p="day" data-k="border">Border</button>
+          <button class="mode-btn sched-gate" data-p="day" data-k="audio">Audio</button>
+        </div>
+        <div class="row-line">
+          <label class="dim" style="min-width:44px;">Night</label>
+          <button class="mode-btn sched-gate" data-p="night" data-k="floor">Floor</button>
+          <button class="mode-btn sched-gate" data-p="night" data-k="border">Border</button>
+          <button class="mode-btn sched-gate" data-p="night" data-k="audio">Audio</button>
+        </div>
+        <div class="dim tiny" style="margin-top:4px;">Lit = ON during that
+          period. Times are the Pi's local clock.</div>
+      </div>
+
       <h2>Targets</h2>
       <div id="targets" class="target-list"></div>
       <button id="add-target-btn">+ Add Target</button>
@@ -223,6 +257,21 @@
         <div class="kv-row"><span>Total</span><span><b id="s-total-w">—</b> W</span></div>
         <div class="kv-row"><span>Daily</span><span>~<b id="s-daily">—</b> Wh</span></div>
         <div class="kv-row"><span>Battery</span><span><b id="s-batt">—</b> d</span></div>
+      </div>
+
+      <h2>Power Limiter</h2>
+      <div class="param-group" id="pl-card">
+        <div class="switch-row">
+          <label class="dim sw-label" title="Frames whose LED draw exceeds the budget are dimmed to fit before they leave for the matrix. Bright floods (e.g. a mirrored white screen) brown out the supply and glitch into random colors — dimmer but stable always wins.">Limiter
+            <span class="dim tiny" id="pl-state">—</span></label>
+          <label class="switch"><input type="checkbox" id="pl-enabled"><span class="slider"></span></label>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Total LED power budget, enforced per panel at half each (the two panels are separate power feeds — a bright scene on one panel can glitch it while the total looks safe). Full white is ~194 W. Lower this live until bright scenes stop glitching.">Budget</label>
+          <input type="range" id="pl-max" class="at-vol" min="40" max="220" step="5" style="flex:1;">
+          <span class="dim tiny" id="pl-max-val" style="min-width:48px;text-align:right;">—</span>
+        </div>
+        <div class="kv-row"><span>Panel draw</span><span><b id="pl-draw">—</b></span></div>
       </div>
     </section>
 
@@ -574,6 +623,20 @@
         recording, and toggle the ocean. Nothing here can break the rest of
         the app. Ask Claude to add new animations any time.</p>
 
+      <h2>Global</h2>
+      <div class="param-group">
+        <div class="row-line">
+          <label class="dim" title="Scales every playground animation, including sequenced meditations">Master brightness</label>
+          <input type="range" id="pg-master-bri" class="at-vol" min="5" max="100" step="1" style="flex:1;">
+          <span class="dim tiny" id="pg-master-bri-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Stretches every animation's clock. Timeline clip positions stay in real time, so tracks keep sync with the voice.">Master speed</label>
+          <input type="range" id="pg-master-speed" class="at-vol" min="25" max="200" step="5" style="flex:1;">
+          <span class="dim tiny" id="pg-master-speed-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+      </div>
+
       <h2>Animations</h2>
       <div class="dim tiny">Tap to show one now. (Ask Claude to add more.)</div>
       <div id="pg-anim-buttons" class="mode-buttons"></div>
@@ -633,6 +696,43 @@
     </section>
 
     <!-- ============================================================ -->
+    <section id="tab-airplay" class="pane">
+      <h2>AirPlay Receiver</h2>
+      <div class="param-group" id="airplay-card">
+        <div class="switch-row">
+          <label class="dim sw-label" title="Advertise the platform as an AirPlay target. Mirrored video is center-cropped to a square and scaled onto the floor; the audio joins the speaker mix.">Receiver
+            <span class="dim tiny" id="ap-state">—</span></label>
+          <label class="switch"><input type="checkbox" id="ap-enabled"><span class="slider"></span></label>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="How the receiver shows up in the AirPlay picker on your phone">Name</label>
+          <input type="text" id="ap-name" class="tiny-num" style="width:140px;" maxlength="40">
+          <button id="ap-name-set" class="tiny-btn">Set</button>
+        </div>
+        <div class="row-line">
+          <label class="dim" title="Level of the mirrored audio in the speaker mix">Volume</label>
+          <input type="range" id="ap-volume" class="at-vol" min="0" max="100" step="1" style="flex:1;">
+          <span class="dim tiny" id="ap-volume-val" style="min-width:38px;text-align:right;">—</span>
+        </div>
+        <div class="kv-row"><span>Stream</span><span><b id="ap-streaming">—</b></span></div>
+        <div class="kv-row"><span>Video</span><span><b id="ap-fps">—</b> fps</span></div>
+        <div class="kv-row"><span>Frames</span><span><b id="ap-frames">—</b></span></div>
+        <div class="row-line" style="margin-top:6px;">
+          <button id="ap-test" class="tiny-btn" title="Inject a 5 s moving test pattern into the receive path — proves FIFO → engine → floor without a phone">Test pattern</button>
+          <button id="ap-test-audio" class="tiny-btn" title="Same, plus a 440 Hz tone through the speaker mix">Test + tone</button>
+          <span class="dim tiny" id="ap-test-state"></span>
+        </div>
+        <div class="dim tiny" id="ap-error" style="margin-top:4px;color:#e08080;"></div>
+        <div class="dim tiny" style="margin-top:6px;">On your phone: Screen
+          Mirroring (or the AirPlay icon in any video app) → pick the name
+          above. The floor follows the mirror while it runs and returns to
+          the previous mode a few seconds after you disconnect.</div>
+      </div>
+      <h2>Receiver log</h2>
+      <pre id="ap-log" class="dim tiny" style="max-height:260px;overflow:auto;white-space:pre-wrap;background:rgba(255,255,255,.04);padding:8px;border-radius:6px;">—</pre>
+    </section>
+
+    <!-- ============================================================ -->
     <section id="tab-logs" class="pane">
       <h2>Logs</h2>
       <div id="log-viewer"></div>
@@ -640,6 +740,6 @@
   </main>
 
   <script src="/static/lib/nexusui.min.js"></script>
-  <script src="/static/admin.js?v=102"></script>
+  <script src="/static/admin.js?v=105"></script>
 </body>
 </html>

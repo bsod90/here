@@ -17,7 +17,7 @@ import math
 
 import numpy as np
 
-from grid import GRID_POSITIONS, TOTAL
+from grid import GRID_POSITIONS, GRID, TOTAL
 
 
 # ── Tunable knobs ───────────────────────────────────────────────────
@@ -40,6 +40,12 @@ DEFAULTS = {
     "light_amount": 0.75,    # how strong the light ribbons are (0 = none)
     "sharpness": 4.5,        # how thin/crisp the ribbons are (1 = broad washes,
                              # 5 = thin bright filaments)
+
+    # --- The pool's edge ---
+    "edge_softness": 3.0,    # how wide the fade-to-dark rim is (LEDs);
+                             # 0 = hard square edge (the bare matrix look)
+    "edge_waviness": 3.2,    # how far the shoreline swells in and out (LEDs)
+    "edge_wave_speed": 1.0,  # how fast the shoreline undulates (1 = lazy)
 
     "fade_in_s": 2.5,        # gentle fade from black when the animation starts
     "brightness": 1.0,       # master brightness multiplier
@@ -131,6 +137,30 @@ def render(frame: bytearray, time_ms: float, params: dict, state: dict | None = 
     amount = min(1.0, max(0.0, float(p["light_amount"])))
     a = np.clip(web ** 1.5 * amount, 0.0, 1.0)[:, np.newaxis]
     rgb = rgb * (1.0 - a) + light[np.newaxis, :] * a
+
+    # ── The pool's edge: soft and wavy ───────────────────────────────
+    # A hard square boundary is what makes the floor read as "LED panel".
+    # Fade the water to darkness over `edge_softness` LEDs before the
+    # physical border, and undulate that shoreline with two slow
+    # travelling waves so the lit region breathes like an organic pool —
+    # the eye never finds the rectangle.
+    soft = float(p["edge_softness"])
+    if soft > 0.0:
+        edge = np.minimum(np.minimum(x, GRID - 1 - x),
+                          np.minimum(y, GRID - 1 - y))
+        wav = float(p["edge_waviness"])
+        if wav > 0.0:
+            wt = float(p["edge_wave_speed"]) * t
+            # Three wave trains at incommensurate frequencies: two short
+            # ripples plus one long slow swell, so the shoreline visibly
+            # LIVES — whole stretches breathe in and out — while each
+            # individual movement stays lazy.
+            wob = (0.45 * np.sin(x * 0.31 + y * 0.17 + 0.53 * wt)
+                   + 0.30 * np.sin(y * 0.41 - x * 0.11 - 0.37 * wt + 2.1)
+                   + 0.45 * np.sin((x + y) * 0.09 + 0.19 * wt + 4.0))
+            edge = edge + wob * wav
+        v = np.clip(edge / max(0.5, soft), 0.0, 1.0)
+        rgb = rgb * (v * v * (3.0 - 2.0 * v))[:, np.newaxis]   # smoothstep
 
     # Gentle fade from black at the start.
     fade = min(1.0, (time_ms / 1000.0) / max(0.01, float(p["fade_in_s"])))

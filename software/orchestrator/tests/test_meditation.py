@@ -12,8 +12,8 @@ import unittest
 from pathlib import Path
 
 from meditation import (MeditationController, OCEAN, OCCUPIED_MODE,
-                        RIPPLES_MODE, IDLE_MODE, FADE_S, RELEASE_PLAYING_S,
-                        _clip)
+                        PLAYGROUND_MODE, RIPPLES_MODE, IDLE_MODE, FADE_S,
+                        RELEASE_PLAYING_S, _clip)
 
 
 class FakeConfig:
@@ -205,6 +205,104 @@ class TestSingle(unittest.TestCase):
         occ.value = False
         ctrl.tick()
         self.assertIsNone(ctrl._rel[-1])
+
+
+class FakePlayground:
+    """Stub of the Playground controller — records visual-track calls."""
+
+    def __init__(self, tracks=None):
+        self.tracks = tracks or {}
+        self.calls = []
+
+    def has_track(self, mid):
+        return bool(self.tracks.get(mid))
+
+    def select(self, mid):
+        self.calls.append(("select", mid))
+        return True
+
+    def play(self, with_recording=False, start_sec=0.0):
+        self.calls.append(("play", with_recording))
+
+    def stop(self, hold_black=False):
+        self.calls.append(("stop", hold_black))
+
+
+class TestPlaygroundVisuals(unittest.TestCase):
+    """A sit plays the meditation's sequenced playground track (visuals
+    only — the audio stays the controller's own clip); no track → the
+    classic breathing circle; pause + ripples rest stay untouched."""
+
+    def _make(self, tracks):
+        ctrl, cfg, engine, audio, occ = make()
+        engine.playground = FakePlayground(tracks)
+        return ctrl, engine, audio, occ
+
+    TRACK = {"med1": [{"animation": "x", "start_sec": 0, "duration_sec": 5}]}
+
+    def test_sit_plays_the_sequenced_track(self):
+        ctrl, engine, audio, occ = self._make(self.TRACK)
+        occ.value = True
+        ctrl.tick()
+        self.assertEqual(engine.mode, PLAYGROUND_MODE)
+        self.assertIn(("select", "med1"), engine.playground.calls)
+        self.assertIn(("play", False), engine.playground.calls)
+        # The audio is still OUR meditation clip, not the playground's.
+        self.assertEqual(played_clip(audio), _clip("med1"))
+        self.assertFalse(audio.tracks[OCEAN]["enabled"])
+
+    def test_sit_without_track_falls_back_to_breathing(self):
+        ctrl, engine, audio, occ = self._make({})
+        occ.value = True
+        ctrl.tick()
+        self.assertEqual(engine.mode, OCCUPIED_MODE)
+        self.assertNotIn(("play", False), engine.playground.calls)
+
+    def test_finish_pauses_then_ripples_then_deferred_stop(self):
+        ctrl, engine, audio, occ = self._make(self.TRACK)
+        occ.value = True
+        ctrl.tick()
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()
+        self.assertEqual(engine.mode, PLAYGROUND_MODE)   # still in the pause
+        self.assertNotIn(("stop", True), engine.playground.calls)
+        ctrl._clk.advance(5.1)
+        ctrl.tick()
+        self.assertEqual(engine.mode, RIPPLES_MODE)      # rest screen
+        # The stop is DEFERRED past the crossfade so the outgoing timeline
+        # keeps rendering while it fades — not an instant snap to black.
+        self.assertNotIn(("stop", True), engine.playground.calls)
+        ctrl._clk.advance(3.6)
+        ctrl.tick()
+        self.assertIn(("stop", True), engine.playground.calls)
+        self.assertTrue(audio.tracks[OCEAN]["enabled"])  # slow ocean return
+
+    def test_vacate_stops_the_track_after_the_fade(self):
+        ctrl, engine, audio, occ = self._make(self.TRACK)
+        occ.value = True
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()
+        self.assertEqual(engine.mode, IDLE_MODE)
+        self.assertNotIn(("stop", True), engine.playground.calls)
+        ctrl._clk.advance(3.6)
+        ctrl.tick()
+        self.assertIn(("stop", True), engine.playground.calls)
+
+    def test_resit_cancels_pending_stop(self):
+        # Leave and sit again within the fade window: the deferred stop
+        # from the old sit must NOT kill the new sit's playback.
+        ctrl, engine, audio, occ = self._make(self.TRACK)
+        occ.value = True
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()                    # vacate → stop deferred
+        occ.value = True
+        ctrl.tick()                    # new sit before the deadline
+        ctrl._clk.advance(4.0)
+        ctrl.tick()
+        self.assertNotIn(("stop", True), engine.playground.calls)
+        self.assertEqual(engine.mode, PLAYGROUND_MODE)
 
 
 class TestRandomNoRepeat(unittest.TestCase):

@@ -12,8 +12,10 @@ import logging
 from dataclasses import dataclass
 from typing import Callable
 
+import numpy as np
+
 from grid import FRAME_BYTES, TOTAL
-from animations import breathing, standby, debug, weight_shadows, fireplace, rain
+from animations import breathing, standby, debug, weight_shadows, fireplace, waves
 from engine_state import TransitionCoordinator, PowerEstimator
 
 
@@ -60,20 +62,37 @@ def _render_standby(engine, frame, t_ms, fade_in, fade_out, state):
 
 
 def _render_ripples(engine, frame, t_ms, fade_in, fade_out, state):
-    # Rain-pond ripples — used as the calm "rest" screen after a guided
-    # meditation finishes while the sitter is still on the bench.
-    params = engine.config.get("ripples") or {}
-    # Honor the engine's mode crossfade: rain.render writes at full brightness,
-    # so without this it would pop in/out instead of fading. Fold the fade
-    # progress into rain's own brightness knob (fade_in: 0→1; fade_out: 1→0).
-    mult = 1.0
+    # Post-meditation "rest" screen: the playground's Underwater animation
+    # (same live-tuned config.playground.waves params, so the rest screen
+    # always matches the tab), entering with a dark beat and its own SLOW
+    # fade-in. Timing comes from config `ripples`: `start_delay_s` of pure
+    # black after the sequence's ending, then `fade_in_s` of gentle rise.
+    # (The mode keeps its historical "ripples" name — it's baked into
+    # saved configs and the meditation controller.)
+    cfg = engine.config.get("ripples") or {}
+    if "t0" not in state:
+        state["t0"] = t_ms
+    t = (t_ms - state["t0"]) / 1000.0
+    delay = max(0.0, float(cfg.get("start_delay_s", 8.0)))
+    if t < delay:
+        for i in range(len(frame)):
+            frame[i] = 0
+        return
+    fade = min(1.0, (t - delay) / max(0.01, float(cfg.get("fade_in_s", 10.0))))
+    # Fold the engine's mode crossfade in too (fade_in: 0→1; fade_out: 1→0).
     if fade_in is not None:
-        mult *= max(0.0, min(1.0, fade_in))
+        fade *= max(0.0, min(1.0, fade_in))
     if fade_out is not None:
-        mult *= max(0.0, 1.0 - max(0.0, min(1.0, fade_out)))
-    if mult < 1.0:
-        params = {**params, "brightness": float(params.get("brightness", 1.0)) * mult}
-    rain.render(frame, t_ms, params, state)
+        fade *= max(0.0, 1.0 - max(0.0, min(1.0, fade_out)))
+    pg_waves = (engine.config.get("playground") or {}).get("waves") or {}
+    params = {**pg_waves,
+              "brightness": float(pg_waves.get("brightness", 1.0)) * fade}
+    ws = state.setdefault("waves", {})
+    if "t0" not in ws:
+        # Back-date the animation's own clock so its built-in fade-in is
+        # already over — the entrance fade above is the only one.
+        ws["t0"] = t_ms - 60_000.0
+    waves.render(frame, t_ms, params, ws)
 
 
 def _render_fireplace(engine, frame, t_ms, fade_in, fade_out, state):
@@ -117,6 +136,35 @@ def _render_playground(engine, frame, t_ms, fade_in, fade_out, state):
             frame[i] = 0
         return
     engine.playground.render(frame, t_ms, state, fade_in=fade_in)
+    # Honor the engine's mode crossfade OUT of the playground — without
+    # this the outgoing timeline rendered at full brightness through the
+    # whole transition and then snapped to black (the "meditation ended
+    # abruptly" bug at the rest hand-off and on vacate).
+    if fade_out is not None:
+        mult = max(0.0, 1.0 - max(0.0, min(1.0, fade_out)))
+        arr = np.frombuffer(bytes(frame), dtype=np.uint8).astype(np.float32)
+        frame[:] = (arr * mult).astype(np.uint8).tobytes()
+
+
+def _render_airplay(engine, frame, t_ms, fade_in, fade_out, state):
+    # Live phone mirror: the AirPlay receiver keeps the latest cropped
+    # 44×44 RGB frame; we just blit it (gamma happens in the transport,
+    # same as every other mode). Black until the first frame arrives.
+    svc = getattr(engine, "airplay", None)
+    buf = svc.latest_frame() if svc is not None else None
+    if buf is None or len(buf) != len(frame):
+        for i in range(len(frame)):
+            frame[i] = 0
+        return
+    frame[:] = buf
+    mult = 1.0
+    if fade_in is not None:
+        mult *= max(0.0, min(1.0, fade_in))
+    if fade_out is not None:
+        mult *= max(0.0, 1.0 - max(0.0, min(1.0, fade_out)))
+    if mult < 1.0:
+        arr = np.frombuffer(bytes(frame), dtype=np.uint8).astype(np.float32)
+        frame[:] = (arr * mult).astype(np.uint8).tobytes()
 
 
 def _render_off(engine, frame, t_ms, fade_in, fade_out, state):
@@ -137,8 +185,14 @@ MODE_REGISTRY: dict[str, ModeSpec] = {
                           fireplace.FADE_IN_S, fireplace.FADE_OUT_S,
                           needs_state=True),
     "midi":      ModeSpec("midi",      _render_midi),
+    # fade_out 3.0: leaving the playground (rest hand-off, vacate) eases
+    # the running timeline down instead of cutting it.
     "playground": ModeSpec("playground", _render_playground,
-                           2.0, 2.0, needs_state=True),
+                           2.0, 3.0, needs_state=True),
+    # Phone mirror (AirPlay receiver). Runtime takeover only — the
+    # receiver switches in when frames flow and restores the previous
+    # mode when the stream ends; never persisted to config.
+    "airplay":   ModeSpec("airplay",   _render_airplay, 1.0, 1.0),
     "debug":     ModeSpec("debug",     _render_debug),
     "off":       ModeSpec("off",       _render_off),
     # WLED-native: the Pi pauses its own animation (stops the DDP stream
@@ -172,6 +226,10 @@ class AnimationEngine:
         self.scene = scene
         self.scale = scale
         self.playground = playground   # Nadia's Playground controller (isolated)
+        # Day/night gate (daynight.py): False → stream BLACK frames.
+        # Keep DDP flowing so WLED stays in realtime mode; dropping the
+        # stream would wake its built-in effects after the timeout.
+        self.output_on = True
         # Optional callback(prev_mode, new_mode) fired after each mode
         # change (outside the lock). Used to couple mode-specific ambience,
         # e.g. fireplace sound following fireplace mode. Set by main.py.
@@ -308,10 +366,15 @@ class AnimationEngine:
             if not self._transition.render(time_ms, self.frame, self._render_mode):
                 self._render_mode(mode, self.frame, time_ms)
 
+            # Day/night gate: floor "off" = black frames, still streamed.
+            if not self.output_on:
+                self.frame[:] = bytes(FRAME_BYTES)
+
             # Weight shadows overlay — additive, on top of whatever just
             # painted (mode render or transition). Only when the scale's
             # overlay toggle is on.
-            if self.scale is not None and self.scale.cfg.weight_overlay:
+            if self.output_on and self.scale is not None \
+                    and self.scale.cfg.weight_overlay:
                 scale_cfg = self.config.get("scale") or {}
                 weight_params = scale_cfg.get("shadows") or {}
                 snap = self.scale.snapshot()

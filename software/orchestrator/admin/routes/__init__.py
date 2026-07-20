@@ -33,6 +33,7 @@ from . import playground as playground_routes
 from . import wled as wled_routes
 from . import ota as ota_routes
 from . import border as border_routes
+from . import airplay as airplay_routes
 
 # Re-export so existing `from admin.routes import create_app, LogHandler`
 # import paths keep working without any caller edits.
@@ -44,9 +45,10 @@ logger = logging.getLogger(__name__)
 
 def create_app(config, engine, transport, telemetry=None, sim_bus=None,
                osc_state=None, scene=None, sequence_store=None,
-               patch_store=None, tap_tracker=None, scale=None,
+               patch_store=None, tap_tracker=None, scale=None, scheduler=None,
                telemetry_history=None, audio=None, playground=None,
-               ota=None, bench_link=None, meditation=None, border=None) -> FastAPI:
+               ota=None, bench_link=None, meditation=None, border=None,
+               airplay=None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -101,7 +103,8 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
 
     # ── Domain submodules ──────────────────────────────────────
     core_routes.register(app, config, engine, transport,
-                         scene=scene, osc_state=osc_state)
+                         scene=scene, osc_state=osc_state, scale=scale,
+                         meditation=meditation, scheduler=scheduler)
     scene_routes.register(app, config, engine, scene, sequence_store,
                           patch_store, tap_tracker)
     scale_routes.register(app, scale)
@@ -113,5 +116,6 @@ def create_app(config, engine, transport, telemetry=None, sim_bus=None,
     if ota is not None:
         ota_routes.register(app, ota, bench_link, config=config)
     border_routes.register(app, border, config)
+    airplay_routes.register(app, airplay, config)
 
     return app

@@ -261,6 +261,17 @@ class ScaleSensor:
         the one-shot recording per occupancy."""
         return self._occupied
 
+    def simulate_occupancy(self, occupied: bool) -> None:
+        """Debug hook for the admin's sensor simulator: force the debounced
+        occupancy state as if the engage/release dwell had already elapsed —
+        so everything keyed to PHYSICAL occupancy (the meditation controller's
+        play-once flow, sequenced visuals) runs exactly like a real sit.
+        The weight loop keeps running; the next genuine threshold crossing
+        (or the release dwell, on a 0 kg bench) takes over from here."""
+        self._occupied = bool(occupied)
+        self._above_since = None
+        self._empty_since = None
+
     def set_release_override(self, seconds) -> None:
         """Live, non-persisted release-dwell override. The meditation
         controller bumps this to ~60 s while a recording plays; passing None

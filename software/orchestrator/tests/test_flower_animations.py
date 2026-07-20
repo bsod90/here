@@ -126,3 +126,27 @@ class TestFlowerAnimations(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoRedDominantPixels(unittest.TestCase):
+    """Sunflower and White noise must never render a red-dominant pixel —
+    red-leaning values at the dim end read as scattered red LEDs on the
+    floor (the gold sunflower heart and the old candle tint both did)."""
+
+    def _worst_red_count(self, mod):
+        st = {}
+        worst = 0
+        for i in range(90):                      # ~36 s of animation
+            f = bytearray(FRAME_BYTES)
+            mod.render(f, i * 400.0, {}, st)
+            px = np.frombuffer(bytes(f), np.uint8).reshape(-1, 3).astype(int)
+            red = (px[:, 0] > px[:, 1]) & (px[:, 0] > px[:, 2]) & (px[:, 0] >= 2)
+            worst = max(worst, int(red.sum()))
+        return worst
+
+    def test_sunflower_never_red(self):
+        self.assertEqual(self._worst_red_count(sunflower), 0)
+
+    def test_white_noise_never_red(self):
+        from animations import noise
+        self.assertEqual(self._worst_red_count(noise), 0)

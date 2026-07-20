@@ -157,3 +157,29 @@ class TestAtomicWrites(ConfigFixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDiffPersistence(ConfigFixture):
+    """Only the diff from DEFAULT_CONFIG is written to disk — untouched
+    settings must keep tracking shipped defaults across upgrades (the
+    old full-bake behaviour silently shadowed every future default)."""
+
+    def test_untouched_defaults_are_not_baked(self):
+        cfg = self.manager()
+        cfg.set("mode", "fireplace")
+        on_disk = json.loads(self.path.read_text())
+        self.assertEqual(on_disk, {"mode": "fireplace"})
+
+    def test_value_reset_to_default_drops_from_disk(self):
+        cfg = self.manager()
+        cfg.set("standby", {"spawn_rate": 5})
+        self.assertIn("standby", json.loads(self.path.read_text()))
+        cfg.set("standby", {"spawn_rate": DEFAULT_CONFIG["standby"]["spawn_rate"]})
+        self.assertNotIn("standby", json.loads(self.path.read_text()))
+
+    def test_unknown_keys_survive(self):
+        cfg = self.manager()
+        cfg.set("my_custom_section", {"x": 1})
+        cfg.set("mode", "fireplace")
+        cfg2 = self.manager()
+        self.assertEqual(cfg2.get("my_custom_section"), {"x": 1})
