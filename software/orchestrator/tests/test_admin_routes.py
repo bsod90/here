@@ -120,6 +120,15 @@ class TestCoreEndpoints(AdminAppFixture):
         r = self.client.post("/api/sensor/weird")
         self.assertEqual(r.status_code, 400)
 
+    def test_sensor_empty_defers_while_meditation_playing(self):
+        # A started meditation plays to its end: "empty" must not slam
+        # standby while a clip is mid-play.
+        self.engine.mode = "playground"
+        with patch.object(self.meditation, "busy", return_value=True):
+            r = self.client.post("/api/sensor/empty")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.engine.mode, "playground")
+
     def test_config_roundtrip(self):
         r = self.client.put("/api/config",
                             json={"standby": {"spawn_rate": 9}})

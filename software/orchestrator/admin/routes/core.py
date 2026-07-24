@@ -94,9 +94,14 @@ def register(app: FastAPI, config, engine, transport,
                 config.set("mode", "breathing")
                 logger.info("Sensor: bench occupied → breathing")
         elif state == "empty":
-            engine.mode = "standby"
-            config.set("mode", "standby")
-            logger.info("Sensor: bench empty → standby")
+            # A started meditation plays to its end — the controller makes
+            # the idle switch itself once the clip finishes.
+            if meditation is not None and meditation.busy():
+                logger.info("Sensor: bench empty (meditation playing to its end)")
+            else:
+                engine.mode = "standby"
+                config.set("mode", "standby")
+                logger.info("Sensor: bench empty → standby")
         else:
             return JSONResponse({"error": "invalid state"}, status_code=400)
         # Also force the scale's debounced occupancy, so everything keyed

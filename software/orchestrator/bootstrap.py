@@ -155,6 +155,12 @@ def build_services(config) -> Services:
                 and med.enabled()):
             logger.info(f"{reason} → visuals deferred to meditation controller")
             return
+        # Likewise on vacate: a started meditation plays to its end, so
+        # the idle switch is the meditation controller's to make once the
+        # clip finishes — slamming standby here would cut the visuals.
+        if (med is not None and mode == scale.cfg.idle_mode and med.busy()):
+            logger.info(f"{reason} → meditation still playing, idle deferred")
+            return
         engine.mode = mode
         config.set("mode", mode)
         logger.info(f"{reason} → mode={mode}")

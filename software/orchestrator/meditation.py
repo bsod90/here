@@ -16,7 +16,14 @@ independently. When at least one is on:
   the clip finishes     → a short pause, then crossfade back to ocean and the
                           calm underwater rest screen (it does NOT replay while the
                           sitter stays)
-  the sitter leaves     → re-arm: the next sit picks again from the top
+  the sitter leaves     → mid-recording: NOTHING is cut — a started meditation
+                          always plays to its end (audio + visuals). Someone
+                          sitting down again joins the ongoing one instead of
+                          restarting. When it finishes on an empty bench the
+                          installation returns to standby + ocean (no rest
+                          screen — nobody is there to rest) and re-arms.
+                          After the recording (pause/rest): re-arm — the next
+                          sit picks again from the top
 
 The play-once guard is keyed to *physical occupancy* (read straight from the
 scale), not engine mode changes — so forcing the visuals back to standby when
@@ -218,7 +225,10 @@ class MeditationController:
             self._on_occupied()
         elif not occ and self._prev_occ:
             self._on_vacated()
-        elif occ and self._played:
+        # Finish/rest progression runs regardless of occupancy — a started
+        # meditation keeps playing after the sitter leaves, so its ending
+        # must still be detected on an empty bench.
+        if self._played:
             if not self._finished:
                 self._check_finished()
             elif not self._rest_started:
@@ -234,7 +244,20 @@ class MeditationController:
             except Exception:
                 logger.exception("meditation: release_setter failed")
 
+    def busy(self) -> bool:
+        """A meditation clip is mid-play (the sitter may have walked away).
+        Mode switchers (scale auto-engage, sensor sim) defer their idle
+        switch while this is true so a started meditation isn't cut."""
+        return self._current is not None and self._played and not self._finished
+
     def _on_occupied(self) -> None:
+        if self.busy():
+            # The previous sitter walked away mid-clip and it's still
+            # playing — the new sit joins the ongoing meditation instead
+            # of restarting it.
+            self._set_release(RELEASE_PLAYING_S)
+            logger.info("meditation: sit during ongoing playback → continuing")
+            return
         choice = self._select()
         if choice is None:
             return
@@ -268,6 +291,12 @@ class MeditationController:
                     "playground track" if self._pg_visuals else "breathing")
 
     def _on_vacated(self) -> None:
+        if self.busy():
+            # Once started, a meditation plays to its end — leaving no
+            # longer cuts it short. Audio and visuals keep running; the
+            # ending (finish → idle) is handled by the tick's finish path.
+            logger.info("meditation: sitter left mid-play → letting it finish")
+            return
         if self._current is not None:
             self._audio.stop_clip(self._current, fade=FADE_S)
         # Deferred: the playground keeps rendering inside the crossfade
@@ -321,6 +350,20 @@ class MeditationController:
     def _maybe_start_rest(self) -> None:
         if self._clock() - self._finished_at < PAUSE_S:
             return                                  # still in the silent pause
+        if not bool(self._occupancy()):
+            # Finished on an empty bench (the sitter walked away mid-play):
+            # nobody is there to rest, so return to standby + ocean and
+            # re-arm for the next sit.
+            self._stop_pg_visuals(defer_s=VISUAL_FADE_S)
+            self._audio.set_track(OCEAN, enabled=True, fade=OCEAN_FADE_S)
+            self._engine.mode = IDLE_MODE
+            self._config.set("mode", IDLE_MODE)
+            self._set_release(None)                 # snappy again (saved base)
+            with self._lock:
+                self._played = self._finished = self._rest_started = False
+                self._current = None
+            logger.info("meditation: finished on empty bench → standby + ocean, re-armed")
+            return
         with self._lock:
             self._rest_started = True
         self._stop_pg_visuals(defer_s=VISUAL_FADE_S)  # ease out, don't snap

@@ -187,24 +187,81 @@ class TestSingle(unittest.TestCase):
         self.assertEqual(engine.mode, RIPPLES_MODE)
         self.assertTrue(audio.tracks[OCEAN]["enabled"])
 
-    def test_leave_rearms_and_restores_ocean(self):
+    def test_leave_mid_play_lets_it_finish(self):
+        # A started meditation is never cut short: leaving mid-recording
+        # changes nothing — audio keeps playing, visuals stay.
         ctrl, cfg, engine, audio, occ = make()
         occ.value = True
         ctrl.tick()
         occ.value = False
         ctrl.tick()
-        self.assertIn(("stop_clip", _clip("med1"), FADE_S), audio.calls)
+        self.assertNotIn("stop_clip", kinds(audio))
+        self.assertTrue(audio.clips[_clip("med1")]["playing"])
+        self.assertEqual(engine.mode, OCCUPIED_MODE)
+        self.assertFalse(audio.tracks[OCEAN]["enabled"])
+
+    def test_finish_on_empty_bench_goes_to_standby_not_rest(self):
+        ctrl, cfg, engine, audio, occ = make()
+        occ.value = True
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()                       # walked away mid-play
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()                       # finish detected on empty bench
+        ctrl._clk.advance(5.1)
+        ctrl.tick()                       # pause over → nobody to rest
+        self.assertEqual(engine.mode, IDLE_MODE)
+        self.assertTrue(audio.tracks[OCEAN]["enabled"])
+        # Re-armed: the next sit starts a fresh meditation.
+        audio.calls.clear()
+        occ.value = True
+        ctrl.tick()
+        self.assertIn("play_clip", kinds(audio))
+
+    def test_leave_after_finish_rearms_and_restores_ocean(self):
+        # Once the recording is over (pause/rest), leaving tears down and
+        # re-arms as before.
+        ctrl, cfg, engine, audio, occ = make()
+        occ.value = True
+        ctrl.tick()
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()
         self.assertTrue(audio.tracks[OCEAN]["enabled"])
         self.assertEqual(engine.mode, IDLE_MODE)
 
-    def test_release_dwell_long_while_playing_then_cleared(self):
+    def test_resit_joins_ongoing_meditation_without_restart(self):
+        ctrl, cfg, engine, audio, occ = make()
+        occ.value = True
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()                       # walked away mid-play
+        audio.calls.clear()
+        occ.value = True
+        ctrl.tick()                       # someone sits during playback
+        self.assertNotIn("play_clip", kinds(audio))   # no restart
+        self.assertEqual(engine.mode, OCCUPIED_MODE)
+        # …and the normal rest flow runs when it finishes seated.
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()
+        ctrl._clk.advance(5.1)
+        ctrl.tick()
+        self.assertEqual(engine.mode, RIPPLES_MODE)
+
+    def test_release_dwell_long_while_playing_cleared_at_finish(self):
         ctrl, cfg, engine, audio, occ = make()
         occ.value = True
         ctrl.tick()
         self.assertEqual(ctrl._rel[-1], RELEASE_PLAYING_S)
         occ.value = False
+        ctrl.tick()                       # mid-play vacate: keeps playing,
+        self.assertEqual(ctrl._rel[-1], RELEASE_PLAYING_S)  # dwell untouched
+        audio.finish_clip(_clip("med1"))
         ctrl.tick()
-        self.assertIsNone(ctrl._rel[-1])
+        ctrl._clk.advance(5.1)
+        ctrl.tick()                       # finished on empty bench
+        self.assertIsNone(ctrl._rel[-1])  # snappy dwell restored
 
 
 class FakePlayground:
@@ -277,28 +334,43 @@ class TestPlaygroundVisuals(unittest.TestCase):
         self.assertIn(("stop", True), engine.playground.calls)
         self.assertTrue(audio.tracks[OCEAN]["enabled"])  # slow ocean return
 
-    def test_vacate_stops_the_track_after_the_fade(self):
+    def test_vacate_mid_play_keeps_the_track_running(self):
         ctrl, engine, audio, occ = self._make(self.TRACK)
         occ.value = True
         ctrl.tick()
         occ.value = False
         ctrl.tick()
+        self.assertEqual(engine.mode, PLAYGROUND_MODE)   # visuals stay
+        ctrl._clk.advance(3.6)
+        ctrl.tick()
+        self.assertNotIn(("stop", True), engine.playground.calls)
+
+    def test_finish_on_empty_bench_stops_track_after_fade(self):
+        ctrl, engine, audio, occ = self._make(self.TRACK)
+        occ.value = True
+        ctrl.tick()
+        occ.value = False
+        ctrl.tick()                    # walked away mid-play
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()
+        ctrl._clk.advance(5.1)
+        ctrl.tick()                    # pause over on empty bench → idle
         self.assertEqual(engine.mode, IDLE_MODE)
         self.assertNotIn(("stop", True), engine.playground.calls)
         ctrl._clk.advance(3.6)
-        ctrl.tick()
+        ctrl.tick()                    # deferred visual stop past the fade
         self.assertIn(("stop", True), engine.playground.calls)
 
-    def test_resit_cancels_pending_stop(self):
-        # Leave and sit again within the fade window: the deferred stop
-        # from the old sit must NOT kill the new sit's playback.
+    def test_leave_and_resit_keeps_playing_no_stop(self):
+        # Leave and sit again while the clip still plays: nothing stops,
+        # nothing restarts.
         ctrl, engine, audio, occ = self._make(self.TRACK)
         occ.value = True
         ctrl.tick()
         occ.value = False
-        ctrl.tick()                    # vacate → stop deferred
+        ctrl.tick()                    # vacate mid-play → keeps running
         occ.value = True
-        ctrl.tick()                    # new sit before the deadline
+        ctrl.tick()                    # resit joins the ongoing playback
         ctrl._clk.advance(4.0)
         ctrl.tick()
         self.assertNotIn(("stop", True), engine.playground.calls)
@@ -307,17 +379,21 @@ class TestPlaygroundVisuals(unittest.TestCase):
 
 class TestRandomNoRepeat(unittest.TestCase):
 
-    def _play_once(self, ctrl, occ):
+    def _play_once(self, ctrl, audio, occ):
         occ.value = True
         ctrl.tick()                  # sit → play
         pid = ctrl._last_id
+        # Finish the clip before leaving — a mid-play leave no longer
+        # re-arms (the meditation would keep playing).
+        audio.finish_clip(_clip(pid))
+        ctrl.tick()
         occ.value = False
-        ctrl.tick()                  # leave → re-arm
+        ctrl.tick()                  # leave after the end → re-arm
         return pid
 
     def test_two_enabled_never_repeat_consecutively(self):
         ctrl, cfg, engine, audio, occ = make(items=TWO, seed=3)
-        picks = [self._play_once(ctrl, occ) for _ in range(12)]
+        picks = [self._play_once(ctrl, audio, occ) for _ in range(12)]
         self.assertEqual(set(picks), {"med1", "med2"})        # both get used
         for a, b in zip(picks, picks[1:]):
             self.assertNotEqual(a, b, f"repeat in {picks}")
@@ -326,7 +402,7 @@ class TestRandomNoRepeat(unittest.TestCase):
         ctrl, cfg, engine, audio, occ = make(items=TWO, seed=1)
         # disable med2 → only med1 available
         ctrl.set_enabled("med2", False)
-        picks = [self._play_once(ctrl, occ) for _ in range(5)]
+        picks = [self._play_once(ctrl, audio, occ) for _ in range(5)]
         self.assertEqual(picks, ["med1"] * 5)
 
 
