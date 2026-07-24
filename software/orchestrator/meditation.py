@@ -17,13 +17,13 @@ independently. When at least one is on:
                           calm underwater rest screen (it does NOT replay while the
                           sitter stays)
   the sitter leaves     → mid-recording: NOTHING is cut — a started meditation
-                          always plays to its end (audio + visuals). Someone
-                          sitting down again joins the ongoing one instead of
-                          restarting. When it finishes on an empty bench the
-                          installation returns to standby + ocean (no rest
-                          screen — nobody is there to rest) and re-arms.
-                          After the recording (pause/rest): re-arm — the next
-                          sit picks again from the top
+                          always plays to its end (audio + visuals), and the
+                          underwater rest still follows. Someone sitting down
+                          again joins the ongoing one instead of restarting.
+                          A rest playing to an empty bench eases back to
+                          standby after REST_EMPTY_S. After the recording
+                          (pause/rest): re-arm — the next sit picks again
+                          from the top
 
 The play-once guard is keyed to *physical occupancy* (read straight from the
 scale), not engine mode changes — so forcing the visuals back to standby when
@@ -58,6 +58,8 @@ VISUAL_FADE_S = 3.5          # keep the playground track rendering this long
                              # after a mode switch away from it, so the
                              # engine's crossfade has LIVE content to fade
                              # out (stopping it instantly = snap to black)
+REST_EMPTY_S = 120.0         # underwater rest lingers this long on an empty
+                             # bench (walk-away endings) before standby
 
 
 def _clip(mid: str) -> str:
@@ -83,6 +85,7 @@ class MeditationController:
         self._finished = False      # recording reached its end (in pause/rest)
         self._finished_at = 0.0     # when it ended (for the post-clip pause)
         self._rest_started = False  # rain rest screen + ocean have come back
+        self._rest_at = 0.0         # when the rest screen started
         self._current = None        # clip name of the meditation now playing
         self._last_id = None        # last meditation id picked (no-repeat)
         self._pg_visuals = False    # visuals driven by a playground track
@@ -233,6 +236,10 @@ class MeditationController:
                 self._check_finished()
             elif not self._rest_started:
                 self._maybe_start_rest()
+            elif not occ and self._clock() - self._rest_at > REST_EMPTY_S:
+                # The rest screen has played to an empty bench long enough
+                # (walk-away ending) — ease back to standby and re-arm.
+                self._end_rest_to_idle()
         self._prev_occ = occ
 
     def _set_release(self, seconds) -> None:
@@ -350,22 +357,11 @@ class MeditationController:
     def _maybe_start_rest(self) -> None:
         if self._clock() - self._finished_at < PAUSE_S:
             return                                  # still in the silent pause
-        if not bool(self._occupancy()):
-            # Finished on an empty bench (the sitter walked away mid-play):
-            # nobody is there to rest, so return to standby + ocean and
-            # re-arm for the next sit.
-            self._stop_pg_visuals(defer_s=VISUAL_FADE_S)
-            self._audio.set_track(OCEAN, enabled=True, fade=OCEAN_FADE_S)
-            self._engine.mode = IDLE_MODE
-            self._config.set("mode", IDLE_MODE)
-            self._set_release(None)                 # snappy again (saved base)
-            with self._lock:
-                self._played = self._finished = self._rest_started = False
-                self._current = None
-            logger.info("meditation: finished on empty bench → standby + ocean, re-armed")
-            return
+        # The underwater rest follows EVERY finished meditation — occupied
+        # or not. (A rest playing to an empty bench times out in tick.)
         with self._lock:
             self._rest_started = True
+        self._rest_at = self._clock()
         self._stop_pg_visuals(defer_s=VISUAL_FADE_S)  # ease out, don't snap
         self._audio.set_track(OCEAN, enabled=True, fade=OCEAN_FADE_S)
         self._engine.mode = RIPPLES_MODE
@@ -374,6 +370,13 @@ class MeditationController:
         self._config.set("mode", IDLE_MODE)
         self._set_release(None)                     # snappy again (saved base)
         logger.info("meditation: pause over → underwater rest + ocean (slow fade)")
+
+    def _end_rest_to_idle(self) -> None:
+        self._engine.mode = IDLE_MODE
+        with self._lock:
+            self._played = self._finished = self._rest_started = False
+            self._current = None
+        logger.info("meditation: rest over on empty bench → standby, re-armed")
 
     # ── Snapshot (for the admin UI) ─────────────────────────
     def state(self) -> dict:

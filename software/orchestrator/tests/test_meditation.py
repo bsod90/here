@@ -13,7 +13,7 @@ from pathlib import Path
 
 from meditation import (MeditationController, OCEAN, OCCUPIED_MODE,
                         PLAYGROUND_MODE, RIPPLES_MODE, IDLE_MODE, FADE_S,
-                        RELEASE_PLAYING_S, _clip)
+                        RELEASE_PLAYING_S, REST_EMPTY_S, _clip)
 
 
 class FakeConfig:
@@ -200,7 +200,9 @@ class TestSingle(unittest.TestCase):
         self.assertEqual(engine.mode, OCCUPIED_MODE)
         self.assertFalse(audio.tracks[OCEAN]["enabled"])
 
-    def test_finish_on_empty_bench_goes_to_standby_not_rest(self):
+    def test_finish_on_empty_bench_rests_then_standby(self):
+        # The underwater rest follows every finished meditation — even a
+        # walk-away ending — then times out to standby on the empty bench.
         ctrl, cfg, engine, audio, occ = make()
         occ.value = True
         ctrl.tick()
@@ -209,14 +211,29 @@ class TestSingle(unittest.TestCase):
         audio.finish_clip(_clip("med1"))
         ctrl.tick()                       # finish detected on empty bench
         ctrl._clk.advance(5.1)
-        ctrl.tick()                       # pause over → nobody to rest
-        self.assertEqual(engine.mode, IDLE_MODE)
+        ctrl.tick()                       # pause over → underwater rest
+        self.assertEqual(engine.mode, RIPPLES_MODE)
         self.assertTrue(audio.tracks[OCEAN]["enabled"])
+        ctrl._clk.advance(REST_EMPTY_S + 1.0)
+        ctrl.tick()                       # rest timed out → standby
+        self.assertEqual(engine.mode, IDLE_MODE)
         # Re-armed: the next sit starts a fresh meditation.
         audio.calls.clear()
         occ.value = True
         ctrl.tick()
         self.assertIn("play_clip", kinds(audio))
+
+    def test_rest_with_sitter_does_not_time_out(self):
+        ctrl, cfg, engine, audio, occ = make()
+        occ.value = True
+        ctrl.tick()
+        audio.finish_clip(_clip("med1"))
+        ctrl.tick()
+        ctrl._clk.advance(5.1)
+        ctrl.tick()                       # rest starts, sitter stays
+        ctrl._clk.advance(REST_EMPTY_S + 10.0)
+        ctrl.tick()
+        self.assertEqual(engine.mode, RIPPLES_MODE)   # rest holds while seated
 
     def test_leave_after_finish_rearms_and_restores_ocean(self):
         # Once the recording is over (pause/rest), leaving tears down and
@@ -345,7 +362,7 @@ class TestPlaygroundVisuals(unittest.TestCase):
         ctrl.tick()
         self.assertNotIn(("stop", True), engine.playground.calls)
 
-    def test_finish_on_empty_bench_stops_track_after_fade(self):
+    def test_finish_on_empty_bench_rests_and_stops_track_after_fade(self):
         ctrl, engine, audio, occ = self._make(self.TRACK)
         occ.value = True
         ctrl.tick()
@@ -354,8 +371,8 @@ class TestPlaygroundVisuals(unittest.TestCase):
         audio.finish_clip(_clip("med1"))
         ctrl.tick()
         ctrl._clk.advance(5.1)
-        ctrl.tick()                    # pause over on empty bench → idle
-        self.assertEqual(engine.mode, IDLE_MODE)
+        ctrl.tick()                    # pause over → underwater rest
+        self.assertEqual(engine.mode, RIPPLES_MODE)
         self.assertNotIn(("stop", True), engine.playground.calls)
         ctrl._clk.advance(3.6)
         ctrl.tick()                    # deferred visual stop past the fade
